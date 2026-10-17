@@ -2,12 +2,18 @@ import os
 import json
 import base64
 import urllib.parse
+import urllib.request
 import glob
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.6.0"
+
+# --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
+SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
+SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
+STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app/"
 
 st.set_page_config(
     page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
@@ -19,8 +25,9 @@ st.title("⚽ Voetbal Observatie Dashboard")
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 match_data = None
+selected_filename = None
 
-# --- 1. DIRECTE DATA VIA URL PARAMETER (STREAMLIT CLOUD METHODE) ---
+# --- 1. DIRECTE DATA VIA URL PARAMETER (STREAMLIT CLOUD OVERDRACHT) ---
 query_params = st.query_params
 encoded_data = query_params.get("data", None)
 
@@ -32,52 +39,115 @@ if encoded_data:
     except Exception as e:
         st.error(f"Fout bij het uitlezen van URL data: {e}")
 
-# --- 2. DESKTOP/SERVER SCAN (HAALT ALLE BESTANDEN UIT /data/ OP) ---
+# --- 2. SELECTIE EN OPSTOREN VAN SPELLEN/WEDSTRIJDEN MET TIJDSAANDUIDING ---
 if not match_data:
     st.sidebar.header("🔍 Wedstrijd Selectie")
 
-    # Haal alle .json bestanden op en sorteer op aanmaak/wijzigingstijd (nieuwste bovenaan)
-    if os.path.exists(DATA_DIR):
-        json_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
-    else:
-        json_files = []
+    matches_list = []
 
-    if json_files:
-        file_map = {}
-        for f_path in json_files:
-            f_name = os.path.basename(f_path)
+    # Optie A: Lokale /data/ map (Desktop modus)
+    if os.path.exists(DATA_DIR):
+        local_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
+        for f_path in local_files:
+            fname = os.path.basename(f_path)
             try:
                 with open(f_path, "r", encoding="utf-8") as f_obj:
                     content = json.load(f_obj)
                     w_info = content.get("wedstrijd", {})
                     wij = w_info.get("wij", "Wij")
                     zij = w_info.get("zij", "Zij")
-                    datum = w_info.get("datum", "")[:16].replace("T", " ")
-                    label = f"{wij} vs {zij} ({datum if datum else f_name})"
+                    datum_raw = w_info.get("datum", "")
+
+                    # Formatteer datum en tijd (DD-MM-YYYY HH:MM)
+                    if datum_raw and "T" in datum_raw:
+                        d_part, t_part = datum_raw.split("T")
+                        jaar, maand, dag = d_part.split("-")
+                        tijd_str = t_part[:5]
+                        datum_formatted = f"{dag}-{maand}-{jaar} {tijd_str}"
+                    else:
+                        datum_formatted = fname
+
+                    label = f"{wij} vs {zij} ({datum_formatted})"
             except:
-                label = f_name
+                label = fname
+            matches_list.append({"filename": fname, "label": label, "source": "local"})
 
-            file_map[label] = f_path
+    # Optie B: Ophalen via get_matches.php server (Cloud / Remote modus)
+    if not matches_list and SERVER_PHP_URL:
+        try:
+            req = urllib.request.Request(SERVER_PHP_URL, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                if response.status == 200:
+                    server_json = json.loads(response.read().decode('utf-8'))
+                    for item in server_json:
+                        datum_raw = item.get("datum", "")
+                        if datum_raw and "T" in datum_raw:
+                            d_part, t_part = datum_raw.split("T")
+                            jaar, maand, dag = d_part.split("-")
+                            tijd_str = t_part[:5]
+                            datum_formatted = f"{dag}-{maand}-{jaar} {tijd_str}"
+                        else:
+                            datum_formatted = item.get("label", item["filename"])
 
+                        wij = item.get("wij", "Wij")
+                        zij = item.get("zij", "Zij")
+
+                        matches_list.append({
+                            "filename": item["filename"],
+                            "label": f"{wij} vs {zij} ({datum_formatted})",
+                            "source": "server"
+                        })
+        except Exception as e:
+            st.sidebar.warning("⚠️ Kon geen verbinding maken met get_matches.php op de server.")
+
+    # Weergave in de sidebar dropdown
+    if matches_list:
+        labels = [m["label"] for m in matches_list]
         requested_match = query_params.get("match", None)
-        labels = list(file_map.keys())
 
         default_idx = 0
         if requested_match:
-            for idx, (lbl, fpath) in enumerate(file_map.items()):
-                if os.path.basename(fpath) == requested_match:
+            for idx, m in enumerate(matches_list):
+                if m["filename"] == requested_match:
                     default_idx = idx
                     break
 
-        selected_label = st.sidebar.selectbox("Kies opgeslagen wedstrijd uit `/data/`:", labels, index=default_idx)
-        selected_file_path = file_map[selected_label]
+        selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels, index=default_idx)
+        selected_match_info = matches_list[labels.index(selected_label)]
+        selected_filename = selected_match_info["filename"]
 
-        with open(selected_file_path, "r", encoding="utf-8") as f:
-            match_data = json.load(f)
+        # Laden van het gekozen JSON-bestand
+        if selected_match_info["source"] == "local":
+            with open(os.path.join(DATA_DIR, selected_filename), "r", encoding="utf-8") as f:
+                match_data = json.load(f)
+        else:
+            file_url = SERVER_DATA_BASE_URL + selected_filename
+            req = urllib.request.Request(file_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(file_url) as resp:
+                match_data = json.loads(resp.read().decode('utf-8'))
     else:
-        uploaded_file = st.sidebar.file_uploader("Upload een JSON wedstrijd-bestand:", type=["json"])
+        uploaded_file = st.sidebar.file_uploader("Upload handmatig een JSON wedstrijd-bestand:", type=["json"])
         if uploaded_file:
             match_data = json.load(uploaded_file)
+
+# --- 3. DELEN FUNCTIONALITEIT (VAN MOBIEL NAAR DESKTOP EN QR-CODE) ---
+if selected_filename or encoded_data:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔗 Dashboard Delen")
+
+    if selected_filename:
+        share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
+        st.sidebar.caption("Kopieer deze link om dit specifieke dashboard op desktop of mobiel te openen:")
+        st.sidebar.code(share_url, language=None)
+    elif encoded_data:
+        share_url = f"{STREAMLIT_CLOUD_URL}/?data={encoded_data}"
+        st.sidebar.caption("Kopieer de directe data-link:")
+        st.sidebar.code(share_url, language=None)
+
+    # QR-Code Optie om direct te scannen met een telefooncamera
+    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
+    with st.sidebar.popover("📱 Toon QR-Code om te scannen"):
+        st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
 
 if not match_data:
     st.info("👋 Welkom! Er is nog geen wedstrijd geladen. Kies een wedstrijd in de sidebar of voer een observatie uit.")
@@ -91,12 +161,18 @@ file_version = match_data.get("versie", "1.0.0")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📋 Wedstrijd Details")
-st.sidebar.write(f"**Team (Wij):** {wedstrijd_info.get('wij', 'Onbekend')}")
-st.sidebar.write(f"**Tegenpartij (Zij):** {wedstrijd_info.get('zij', 'Onbekend')}")
+st.sidebar.write(f"**Team (Wij):** {wedstrijd_info.get('wij', 'Wij')}")
+st.sidebar.write(f"**Tegenpartij (Zij):** {wedstrijd_info.get('zij', 'Zij')}")
 st.sidebar.write(f"**Duur per helft:** {wedstrijd_info.get('duur_per_helft_minuten', '-')} min")
 st.sidebar.write(f"**Verlenging:** {'Ja' if wedstrijd_info.get('verlenging_mogelijk') else 'Nee'}")
 if "datum" in wedstrijd_info:
-    st.sidebar.write(f"📅 **Datum:** {wedstrijd_info['datum'][:10]}")
+    datum_raw = wedstrijd_info['datum']
+    if "T" in datum_raw:
+        d_p, t_p = datum_raw.split("T")
+        j, m, d = d_p.split("-")
+        st.sidebar.write(f"📅 **Datum & Tijd:** {d}-{m}-{j} {t_p[:5]}")
+    else:
+        st.sidebar.write(f"📅 **Datum:** {datum_raw}")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Dashboard Versie: **v{APP_VERSION}**")
