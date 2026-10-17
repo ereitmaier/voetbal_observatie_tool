@@ -11,8 +11,8 @@ import streamlit as st
 APP_VERSION = "2.7.0"
 
 # --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
-SERVER_PHP_URL = "https://jouw-domein.nl/get_matches.php"
-SERVER_DATA_BASE_URL = "https://jouw-domein.nl/data/"
+SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
+SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
 STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
 
 st.set_page_config(
