@@ -2,19 +2,17 @@ import os
 import json
 import base64
 import urllib.parse
+import urllib.request
 import glob
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
-# Functie om te bepalen of we op Streamlit Cloud draaien
-def is_streamlit_cloud():
-    # Streamlit cloud zet speciale omgevingsvariabelen
-    return os.environ.get("STREAMLIT_SERVER_GATHER_USAGE_STATS") is not None or "streamlit.app" in os.environ.get("HTTP_HOST", "")
-
-IS_CLOUD = is_streamlit_cloud()
+# Pas dit aan naar de URL van jouw webserver waar get_matches.php staat
+SERVER_PHP_URL = "https://jouw-domein.nl/get_matches.php"
+SERVER_DATA_BASE_URL = "https://jouw-domein.nl/data/"
 
 st.set_page_config(
     page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
@@ -24,15 +22,10 @@ st.set_page_config(
 
 st.title("⚽ Voetbal Observatie Dashboard")
 
-# Badge bovenaan die de omgeving toont
-if IS_CLOUD:
-    st.info("☁️ **Omgeving:** Streamlit Cloud (streamlit.io)")
-else:
-    st.success("🖥️ **Omgeving:** Desktop / Lokale Server")
-
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 match_data = None
 
-# --- 1. DATABRON: URL PARAMETER (STREAMLIT CLOUD METHODE) ---
+# --- 1. DIRECTE DATA VIA URL PARAMETER ---
 query_params = st.query_params
 encoded_data = query_params.get("data", None)
 
@@ -40,33 +33,66 @@ if encoded_data:
     try:
         decoded_bytes = base64.b64decode(urllib.parse.unquote(encoded_data))
         match_data = json.loads(decoded_bytes.decode("utf-8"))
-        st.caption("⚡ Data direct geladen via URL overdracht.")
+        st.caption("⚡ Wedstrijd direct geladen vanuit observatietool.")
     except Exception as e:
-        st.error(f"Fout bij het uitlezen van data uit URL: {e}")
+        st.error(f"Fout bij het uitlezen van URL data: {e}")
 
-# --- 2. DATABRON: DESKTOP / LOKALE DATA MAP ---
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-
+# --- 2. WEDSTRIJDEN OPHALEN VAN SERVER / LOKALE MAP ---
 if not match_data:
-    requested_match = query_params.get("match", None)
-    json_files = glob.glob(os.path.join(DATA_DIR, "*.json")) if os.path.exists(DATA_DIR) else []
-
     st.sidebar.header("🔍 Wedstrijd Selectie")
 
-    if json_files:
-        file_names = [os.path.basename(f) for f in json_files]
-        default_index = file_names.index(requested_match) if requested_match in file_names else 0
+    matches_list = []
 
-        selected_filename = st.sidebar.selectbox("Kies uit lokale `/data/` map:", file_names, index=default_index)
-        with open(os.path.join(DATA_DIR, selected_filename), "r", encoding="utf-8") as f:
-            match_data = json.load(f)
+    # Check A: Lokale /data/ map (Desktop modus)
+    if os.path.exists(DATA_DIR):
+        local_files = glob.glob(os.path.join(DATA_DIR, "*.json"))
+        for f in local_files:
+            fname = os.path.basename(f)
+            matches_list.append({"filename": fname, "label": fname, "type": "local"})
+
+    # Check B: Ophalen via PHP server (Streamlit Cloud modus)
+    if not matches_list and SERVER_PHP_URL:
+        try:
+            req = urllib.request.Request(SERVER_PHP_URL, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                if response.status == 200:
+                    server_matches = json.loads(response.read().decode('utf-8'))
+                    for m in server_matches:
+                        m["type"] = "server"
+                        matches_list.append(m)
+        except Exception as e:
+            st.sidebar.warning("⚠️ Kon geen verbinding maken met de PHP server.")
+
+    # Weergave van het keuzemenu
+    if matches_list:
+        labels = [m["label"] for m in matches_list]
+        requested_match = query_params.get("match", None)
+
+        default_idx = 0
+        if requested_match:
+            for idx, m in enumerate(matches_list):
+                if m["filename"] == requested_match:
+                    default_idx = idx
+                    break
+
+        selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd van de server:", labels, index=default_idx)
+        selected_match_info = matches_list[labels.index(selected_label)]
+
+        # Laden van het gekozen bestand
+        if selected_match_info["type"] == "local":
+            with open(os.path.join(DATA_DIR, selected_match_info["filename"]), "r", encoding="utf-8") as f:
+                match_data = json.load(f)
+        else:
+            file_url = SERVER_DATA_BASE_URL + selected_match_info["filename"]
+            with urllib.request.urlopen(file_url) as resp:
+                match_data = json.loads(resp.read().decode('utf-8'))
     else:
-        uploaded_file = st.sidebar.file_uploader("Upload een JSON wedstrijd-bestand:", type=["json"])
+        uploaded_file = st.sidebar.file_uploader("Upload een JSON bestand:", type=["json"])
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
 if not match_data:
-    st.info("👋 Welkom! Er is nog geen wedstrijd geladen. Gebruik de observatietool, selecteer een lokale wedstrijd of upload een JSON-bestand.")
+    st.info("👋 Welkom! Er is nog geen wedstrijd geladen. Kies een wedstrijd in de sidebar of voer een observatie uit.")
     st.sidebar.markdown("---")
     st.sidebar.caption(f"App Versie: **v{APP_VERSION}**")
     st.stop()
@@ -86,7 +112,6 @@ if "datum" in wedstrijd_info:
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Dashboard Versie: **v{APP_VERSION}**")
-st.sidebar.caption(f"Data Formaat Versie: **v{file_version}**")
 
 if not observaties:
     st.warning("Er zijn geen geobserveerde gebeurtenissen gevonden in dit bestand.")
