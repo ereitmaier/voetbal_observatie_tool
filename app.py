@@ -8,12 +8,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 
 # --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
-SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
-SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
-STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app/"
+SERVER_PHP_URL = "https://jouw-domein.nl/get_matches.php"
+SERVER_DATA_BASE_URL = "https://jouw-domein.nl/data/"
+STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
 
 st.set_page_config(
     page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
@@ -27,7 +27,31 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 match_data = None
 selected_filename = None
 
-# --- 1. DIRECTE DATA VIA URL PARAMETER (STREAMLIT CLOUD OVERDRACHT) ---
+# --- HULPFUNCTIE VOOR SCHONE DEEL-URLS ---
+@st.cache_data(show_spinner=False)
+def get_clean_share_url(base_app_url, filename=None, encoded_data=None):
+    clean_base = base_app_url.rstrip('/')
+
+    # 1. Schone URL op basis van de bestandsnaam op de server
+    if filename:
+        return f"{clean_base}/?match={filename}"
+
+    # 2. Privacy-vriendelijke verkorter via is.gd als fallback bij ruwe URL-data
+    if encoded_data:
+        long_url = f"{clean_base}/?data={encoded_data}"
+        try:
+            api_url = f"https://is.gd/create.php?format=simple&url={urllib.parse.quote(long_url)}"
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    return resp.read().decode('utf-8')
+        except:
+            pass
+        return long_url
+
+    return clean_base
+
+# --- 1. DIRECTE DATA VIA URL PARAMETER ---
 query_params = st.query_params
 encoded_data = query_params.get("data", None)
 
@@ -39,7 +63,7 @@ if encoded_data:
     except Exception as e:
         st.error(f"Fout bij het uitlezen van URL data: {e}")
 
-# --- 2. SELECTIE EN OPSTOREN VAN SPELLEN/WEDSTRIJDEN MET TIJDSAANDUIDING ---
+# --- 2. SELECTIE EN OPHALEN VAN WEDSTRIJDEN ---
 if not match_data:
     st.sidebar.header("🔍 Wedstrijd Selectie")
 
@@ -58,7 +82,6 @@ if not match_data:
                     zij = w_info.get("zij", "Zij")
                     datum_raw = w_info.get("datum", "")
 
-                    # Formatteer datum en tijd (DD-MM-YYYY HH:MM)
                     if datum_raw and "T" in datum_raw:
                         d_part, t_part = datum_raw.split("T")
                         jaar, maand, dag = d_part.split("-")
@@ -130,39 +153,17 @@ if not match_data:
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
-# --- HULPFUNCTIE VOOR URL SHORTENING (TINYURL) ---
-@st.cache_data(show_spinner=False)
-def make_short_url(long_url):
-    try:
-        # Verwijder eventuele dubbele slashes in de URL
-        clean_url = long_url.replace(".streamlit.app//?", ".streamlit.app/?")
-        api_url = f"http://tinyurl.com/api-create.php?url={urllib.parse.quote(clean_url)}"
-        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3) as response:
-            if response.status == 200:
-                return response.read().decode('utf-8')
-    except Exception as e:
-        pass
-    return long_url.replace(".streamlit.app//?", ".streamlit.app/?")
-
-# --- 3. DELEN FUNCTIONALITEIT (INCLUSIEF URL SHORTENER & QR) ---
+# --- 3. DELEN FUNCTIONALITEIT (CLEAN URL & QR-CODE) ---
 if selected_filename or encoded_data:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
 
-    if selected_filename:
-        raw_share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
-    elif encoded_data:
-        raw_share_url = f"{STREAMLIT_CLOUD_URL}/?data={encoded_data}"
+    share_url = get_clean_share_url(STREAMLIT_CLOUD_URL, selected_filename, encoded_data)
 
-    # Genereer de korte URL via TinyURL
-    short_share_url = make_short_url(raw_share_url)
+    st.sidebar.caption("Kopieer deze link om dit specifieke dashboard te delen:")
+    st.sidebar.code(share_url, language=None)
 
-    st.sidebar.caption("Korte link om eenvoudig te delen:")
-    st.sidebar.code(short_share_url, language=None)
-
-    # QR-Code genereren op basis van de korte link
-    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(short_share_url)}"
+    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
     with st.sidebar.popover("📱 Toon QR-Code om te scannen"):
         st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
 
@@ -289,5 +290,3 @@ with tab2:
 
 with tab3:
     st.subheader("Alle Vastgelegde Gebeurtenissen")
-    st.dataframe(df[["periode", "tijd", "minuut_float", "functie", "taak", "event"]], use_container_width=True)
-    st.download_button("📥 Download deze data als CSV", df.to_csv(index=False).encode('utf-8'), "export.csv", "text/csv")
