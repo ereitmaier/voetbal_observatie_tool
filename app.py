@@ -1,13 +1,14 @@
 import os
 import json
+import base64
+import urllib.parse
 import glob
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
-# Pagina configuratie
 st.set_page_config(
     page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
     page_icon="⚽",
@@ -17,44 +18,44 @@ st.set_page_config(
 st.title("⚽ Voetbal Observatie Dashboard")
 st.markdown("Analyse van teamfuncties en teamtaken op basis van wedstrijdwaarnemingen.")
 
+match_data = None
+
+# --- 1. PROBEER DATA UIT DE URL TE LEZEN (Aangestuurd vanuit index.html) ---
+query_params = st.query_params
+encoded_data = query_params.get("data", None)
+
+if encoded_data:
+    try:
+        decoded_bytes = base64.b64decode(urllib.parse.unquote(encoded_data))
+        match_data = json.loads(decoded_bytes.decode("utf-8"))
+        st.success("⚡ Wedstrijddata succesvol direct geladen vanuit de observatietool!")
+    except Exception as e:
+        st.error(f"Fout bij het uitlezen van data uit URL: {e}")
+
+# --- 2. FALLBACK: GEBRUIK LOKALE DATA MAP OF FILE UPLOADER ---
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-@st.cache_data(ttl=2)
-def load_json_files():
-    if not os.path.exists(DATA_DIR):
-        return []
-    files = glob.glob(os.path.join(DATA_DIR, "*.json"))
-    return sorted(files, key=os.path.getmtime, reverse=True)
+if not match_data:
+    st.sidebar.header("🔍 Wedstrijd Selectie")
 
-json_files = load_json_files()
+    # Zoek eventuele JSON-bestanden in /data/
+    json_files = glob.glob(os.path.join(DATA_DIR, "*.json")) if os.path.exists(DATA_DIR) else []
 
-if not json_files:
-    st.warning("⚠️ Geen JSON-bestanden gevonden in de `/data/` map.")
+    if json_files:
+        file_names = [os.path.basename(f) for f in json_files]
+        selected_filename = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", file_names)
+        with open(os.path.join(DATA_DIR, selected_filename), "r", encoding="utf-8") as f:
+            match_data = json.load(f)
+    else:
+        uploaded_file = st.sidebar.file_uploader("Upload een JSON wedstrijd-bestand:", type=["json"])
+        if uploaded_file:
+            match_data = json.load(uploaded_file)
+
+if not match_data:
+    st.info("👋 Welkom! Er is nog geen wedstrijd geladen. Gebruik de observatietool of upload een JSON-bestand in de sidebar.")
     st.sidebar.markdown("---")
     st.sidebar.caption(f"App Versie: **v{APP_VERSION}**")
     st.stop()
-
-# --- URL PARAMETER LOGICA ---
-query_params = st.query_params
-requested_match = query_params.get("match", None)
-
-file_names = [os.path.basename(f) for f in json_files]
-default_index = 0
-
-if requested_match and requested_match in file_names:
-    default_index = file_names.index(requested_match)
-
-st.sidebar.header("🔍 Wedstrijd Selectie")
-selected_filename = st.sidebar.selectbox(
-    "Kies een wedstrijd:",
-    file_names,
-    index=default_index
-)
-
-selected_file = os.path.join(DATA_DIR, selected_filename)
-
-with open(selected_file, "r", encoding="utf-8") as f:
-    match_data = json.load(f)
 
 wedstrijd_info = match_data.get("wedstrijd", {})
 observaties = match_data.get("observaties", [])
@@ -74,7 +75,7 @@ st.sidebar.caption(f"Dashboard Versie: **v{APP_VERSION}**")
 st.sidebar.caption(f"Data Formaat Versie: **v{file_version}**")
 
 if not observaties:
-    st.info("Er zijn geen observaties vastgelegd voor deze wedstrijd.")
+    st.warning("Er zijn geen geobserveerde gebeurtenissen gevonden in dit bestand.")
     st.stop()
 
 df = pd.DataFrame(observaties)
@@ -179,7 +180,6 @@ with tab2:
 
     df_p = df_p.sort_values(by="minuut_float")
 
-    # 1. Cumulatief verloop
     st.markdown("##### 📈 Opbouw van de acties (Cumulatief over tijd)")
     df_p["teller"] = 1
     df_p["cumulatief"] = df_p.groupby("functie")["teller"].cumsum()
@@ -199,7 +199,6 @@ with tab2:
     fig_cum.update_layout(xaxis=dict(tick0=0, dtick=5))
     st.plotly_chart(fig_cum, use_container_width=True)
 
-    # 2. Bar chart per tijdsblok van 5 minuten
     st.markdown("##### 📊 Intensiteit per 5 Speelminuten")
     bin_size = 5
     df_p["tijdsblok"] = (df_p["minuut_int"] // bin_size) * bin_size
@@ -219,7 +218,6 @@ with tab2:
     )
     st.plotly_chart(fig_block, use_container_width=True)
 
-    # 3. Scatterplot op tijdbalk
     st.markdown("##### 📍 Alle losse Gebeurtenissen op de Tijdbalk")
     fig_scat = px.scatter(
         df_p,
@@ -244,7 +242,7 @@ with tab3:
     st.download_button(
         label="📥 Download deze data als CSV",
         data=csv,
-        file_name=f"export_{os.path.basename(selected_file)}.csv",
+        file_name="export_observatie.csv",
         mime="text/csv"
     )
 
