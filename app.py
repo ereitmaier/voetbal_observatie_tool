@@ -130,22 +130,39 @@ if not match_data:
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
-# --- 3. DELEN FUNCTIONALITEIT (VAN MOBIEL NAAR DESKTOP EN QR-CODE) ---
+# --- HULPFUNCTIE VOOR URL SHORTENING (TINYURL) ---
+@st.cache_data(show_spinner=False)
+def make_short_url(long_url):
+    try:
+        # Verwijder eventuele dubbele slashes in de URL
+        clean_url = long_url.replace(".streamlit.app//?", ".streamlit.app/?")
+        api_url = f"http://tinyurl.com/api-create.php?url={urllib.parse.quote(clean_url)}"
+        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            if response.status == 200:
+                return response.read().decode('utf-8')
+    except Exception as e:
+        pass
+    return long_url.replace(".streamlit.app//?", ".streamlit.app/?")
+
+# --- 3. DELEN FUNCTIONALITEIT (INCLUSIEF URL SHORTENER & QR) ---
 if selected_filename or encoded_data:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
 
     if selected_filename:
-        share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
-        st.sidebar.caption("Kopieer deze link om dit specifieke dashboard op desktop of mobiel te openen:")
-        st.sidebar.code(share_url, language=None)
+        raw_share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
     elif encoded_data:
-        share_url = f"{STREAMLIT_CLOUD_URL}/?data={encoded_data}"
-        st.sidebar.caption("Kopieer de directe data-link:")
-        st.sidebar.code(share_url, language=None)
+        raw_share_url = f"{STREAMLIT_CLOUD_URL}/?data={encoded_data}"
 
-    # QR-Code Optie om direct te scannen met een telefooncamera
-    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
+    # Genereer de korte URL via TinyURL
+    short_share_url = make_short_url(raw_share_url)
+
+    st.sidebar.caption("Korte link om eenvoudig te delen:")
+    st.sidebar.code(short_share_url, language=None)
+
+    # QR-Code genereren op basis van de korte link
+    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(short_share_url)}"
     with st.sidebar.popover("📱 Toon QR-Code om te scannen"):
         st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
 
