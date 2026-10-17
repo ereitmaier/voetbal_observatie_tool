@@ -134,12 +134,33 @@ if not match_data:
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
-# --- 3. DELEN FUNCTIONALITEIT ---
-if current_token:
+# --- 3. DELEN FUNCTIONALITEIT (ALTIJD BESCHIKBAAR) ---
+if match_data:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
-    share_url = f"{STREAMLIT_CLOUD_URL}/?token={current_token}"
-    st.sidebar.caption("Kopieer deze beveiligde link:")
+
+    # Als er nog geen token actief is, proberen we de token op te halen/genereren
+    if not current_token and 'selected_filename' in locals() and selected_filename:
+        try:
+            # Vraag aan get_matches.php de token die bij dit bestand hoort
+            token_query_url = f"{SERVER_PHP_URL}?get_token_for={urllib.parse.quote(selected_filename)}"
+            req = urllib.request.Request(token_query_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                t_res = json.loads(resp.read().decode('utf-8'))
+                if t_res.get("status") == "success":
+                    current_token = t_res["token"]
+        except:
+            pass
+
+    # Genereer de deel-URL op basis van token (of fallback op match parameter)
+    if current_token:
+        share_url = f"{STREAMLIT_CLOUD_URL}/?token={current_token}"
+    elif 'selected_filename' in locals() and selected_filename:
+        share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
+    else:
+        share_url = STREAMLIT_CLOUD_URL
+
+    st.sidebar.caption("Kopieer deze link om dit specifieke dashboard te delen:")
     st.sidebar.code(share_url, language=None)
 
     qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
