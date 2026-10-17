@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 
 # --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
@@ -25,47 +25,37 @@ st.title("⚽ Voetbal Observatie Dashboard")
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 match_data = None
-selected_filename = None
+current_token = None
 
-# --- HULPFUNCTIE VOOR SCHONE DEEL-URLS ---
-@st.cache_data(show_spinner=False)
-def get_clean_share_url(base_app_url, filename=None, encoded_data=None):
-    clean_base = base_app_url.rstrip('/')
-
-    # 1. Schone URL op basis van de bestandsnaam op de server
-    if filename:
-        return f"{clean_base}/?match={filename}"
-
-    # 2. Privacy-vriendelijke verkorter via is.gd als fallback bij ruwe URL-data
-    if encoded_data:
-        long_url = f"{clean_base}/?data={encoded_data}"
-        try:
-            api_url = f"https://is.gd/create.php?format=simple&url={urllib.parse.quote(long_url)}"
-            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    return resp.read().decode('utf-8')
-        except:
-            pass
-        return long_url
-
-    return clean_base
-
-# --- 1. DIRECTE DATA VIA URL PARAMETER ---
 query_params = st.query_params
-encoded_data = query_params.get("data", None)
+token_param = query_params.get("token", None)
 
-if encoded_data:
+# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN (VOOR STREAMLIT CLOUD / DELEN) ---
+if token_param:
+    current_token = token_param
     try:
-        decoded_bytes = base64.b64decode(urllib.parse.unquote(encoded_data))
-        match_data = json.loads(decoded_bytes.decode("utf-8"))
-        st.success("⚡ Wedstrijd direct geladen vanuit de observatietool!")
-    except Exception as e:
-        st.error(f"Fout bij het uitlezen van URL data: {e}")
+        # Vraag aan get_matches.php welk bestand bij de hash/token hoort
+        token_resolve_url = f"{SERVER_PHP_URL}?token={token_param}"
+        req = urllib.request.Request(token_resolve_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as resp:
+            token_res = json.loads(resp.read().decode('utf-8'))
 
-# --- 2. SELECTIE EN OPHALEN VAN WEDSTRIJDEN ---
+            if token_res.get("status") == "success":
+                filename = token_res["filename"]
+                # Haal het specifieke JSON-bestand op uit /data/
+                file_url = SERVER_DATA_BASE_URL + filename
+                file_req = urllib.request.Request(file_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(file_req) as f_resp:
+                    match_data = json.loads(f_resp.read().decode('utf-8'))
+                st.sidebar.success("🔒 Beveiligde wedstrijd-link geactiveerd")
+            else:
+                st.error("❌ Ongeldige of niet-bestaande link-token.")
+    except Exception as e:
+        st.error(f"Fout bij het ophalen van beveiligde data via token: {e}")
+
+# --- 2. LOKALE BEHEERDER MODUS (ZICHTBAAR WANNEER ER GEEN TOKEN IS) ---
 if not match_data:
-    st.sidebar.header("🔍 Wedstrijd Selectie")
+    st.sidebar.header("🔍 Wedstrijd Selectie (Lokaal/Beheerder)")
 
     matches_list = []
 
@@ -74,6 +64,7 @@ if not match_data:
         local_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
         for f_path in local_files:
             fname = os.path.basename(f_path)
+            if fname == "tokens.json": continue
             try:
                 with open(f_path, "r", encoding="utf-8") as f_obj:
                     content = json.load(f_obj)
@@ -95,7 +86,7 @@ if not match_data:
                 label = fname
             matches_list.append({"filename": fname, "label": label, "source": "local"})
 
-    # Optie B: Ophalen via get_matches.php server (Cloud / Remote modus)
+    # Optie B: Server overzicht ophalen (als er geen token is ingegeven)
     if not matches_list and SERVER_PHP_URL:
         try:
             req = urllib.request.Request(SERVER_PHP_URL, headers={'User-Agent': 'Mozilla/5.0'})
@@ -123,23 +114,13 @@ if not match_data:
         except Exception as e:
             st.sidebar.warning("⚠️ Kon geen verbinding maken met get_matches.php op de server.")
 
-    # Weergave in de sidebar dropdown
+    # Dropdown weergave
     if matches_list:
         labels = [m["label"] for m in matches_list]
-        requested_match = query_params.get("match", None)
-
-        default_idx = 0
-        if requested_match:
-            for idx, m in enumerate(matches_list):
-                if m["filename"] == requested_match:
-                    default_idx = idx
-                    break
-
-        selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels, index=default_idx)
+        selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels)
         selected_match_info = matches_list[labels.index(selected_label)]
         selected_filename = selected_match_info["filename"]
 
-        # Laden van het gekozen JSON-bestand
         if selected_match_info["source"] == "local":
             with open(os.path.join(DATA_DIR, selected_filename), "r", encoding="utf-8") as f:
                 match_data = json.load(f)
@@ -153,14 +134,12 @@ if not match_data:
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
-# --- 3. DELEN FUNCTIONALITEIT (CLEAN URL & QR-CODE) ---
-if selected_filename or encoded_data:
+# --- 3. DELEN FUNCTIONALITEIT ---
+if current_token:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
-
-    share_url = get_clean_share_url(STREAMLIT_CLOUD_URL, selected_filename, encoded_data)
-
-    st.sidebar.caption("Kopieer deze link om dit specifieke dashboard te delen:")
+    share_url = f"{STREAMLIT_CLOUD_URL}/?token={current_token}"
+    st.sidebar.caption("Kopieer deze beveiligde link:")
     st.sidebar.code(share_url, language=None)
 
     qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
@@ -168,11 +147,12 @@ if selected_filename or encoded_data:
         st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
 
 if not match_data:
-    st.info("👋 Welkom! Er is nog geen wedstrijd geladen. Kies een wedstrijd in de sidebar of voer een observatie uit.")
+    st.info("👋 Welkom! Gebruik een geldige token-link of kies lokaal een wedstrijd in het menu.")
     st.sidebar.markdown("---")
     st.sidebar.caption(f"App Versie: **v{APP_VERSION}**")
     st.stop()
 
+# --- 4. DATA VERWERKING EN DASHBOARD WEERGAVE ---
 wedstrijd_info = match_data.get("wedstrijd", {})
 observaties = match_data.get("observaties", [])
 file_version = match_data.get("versie", "1.0.0")
@@ -290,3 +270,5 @@ with tab2:
 
 with tab3:
     st.subheader("Alle Vastgelegde Gebeurtenissen")
+    st.dataframe(df[["periode", "tijd", "minuut_float", "functie", "taak", "event"]], use_container_width=True)
+    st.download_button("📥 Download deze data als CSV", df.to_csv(index=False).encode('utf-8'), "export.csv", "text/csv")
