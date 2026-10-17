@@ -5,9 +5,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+APP_VERSION = "2.0.0"
+
 # Pagina configuratie
 st.set_page_config(
-    page_title="Voetbal Observatie Dashboard",
+    page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
     page_icon="⚽",
     layout="wide"
 )
@@ -28,9 +30,11 @@ json_files = load_json_files()
 
 if not json_files:
     st.warning("⚠️ Geen JSON-bestanden gevonden in de `/data/` map.")
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"App Versie: **v{APP_VERSION}**")
     st.stop()
 
-# --- URL PARAMETER LOGICA (Aansturing vanuit Observatietool) ---
+# --- URL PARAMETER LOGICA ---
 query_params = st.query_params
 requested_match = query_params.get("match", None)
 
@@ -54,6 +58,7 @@ with open(selected_file, "r", encoding="utf-8") as f:
 
 wedstrijd_info = match_data.get("wedstrijd", {})
 observaties = match_data.get("observaties", [])
+file_version = match_data.get("versie", "1.0.0")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📋 Wedstrijd Details")
@@ -63,6 +68,10 @@ st.sidebar.write(f"**Duur per helft:** {wedstrijd_info.get('duur_per_helft_minut
 st.sidebar.write(f"**Verlenging:** {'Ja' if wedstrijd_info.get('verlenging_mogelijk') else 'Nee'}")
 if "datum" in wedstrijd_info:
     st.sidebar.write(f"📅 **Datum:** {wedstrijd_info['datum'][:10]}")
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Dashboard Versie: **v{APP_VERSION}**")
+st.sidebar.caption(f"Data Formaat Versie: **v{file_version}**")
 
 if not observaties:
     st.info("Er zijn geen observaties vastgelegd voor deze wedstrijd.")
@@ -238,3 +247,6 @@ with tab3:
         file_name=f"export_{os.path.basename(selected_file)}.csv",
         mime="text/csv"
     )
+
+st.markdown("---")
+st.caption(f"Voetbal Observatie Dashboard v{APP_VERSION}")
