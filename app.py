@@ -7,11 +7,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.9.0"
+APP_VERSION = "3.0.0"
 
-# --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
-SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
-SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
+# --- CONFIGURATIE ---
+SERVER_PHP_URL = "https://jouw-domein.nl/get_matches.php"
+SERVER_DATA_BASE_URL = "https://jouw-domein.nl/data/"
 STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
 
 # Fallback mapping voor eerdere JSON-bestanden die geen expliciete 'waarde' velden hadden
@@ -31,6 +31,17 @@ EVENT_VALUES = {
     # Verdedigen - Voorkomen van scoren
     "Tegenpartij mist de scoringskans": 0,
     "Tegenpartij benut scoringskans": -3
+}
+
+# Kleurenverloop op basis van actiewaarde (-3 t/m +3)
+COLOR_MAP_WAARDE = {
+    -3: "#c0392b",  # Donkerrood (Tegendoelpunt)
+    -2: "#e74c3c",  # Rood (Groot balverlies)
+    -1: "#e67e22",  # Rood-Oranje (Balverlies)
+     0: "#f39c12",  # Oranje (Neutraal)
+     1: "#f1c40f",  # Geel / Amber (Licht positief)
+     2: "#2ecc71",  # Lichtgroen / Lime (Kans / Redding)
+     3: "#27ae60"   # Donkergroen (Doelpunt)
 }
 
 st.set_page_config(
@@ -226,11 +237,11 @@ def time_to_minutes(t_str):
 df["minuut_float"] = df["tijd"].apply(time_to_minutes)
 df["minuut_int"] = df["minuut_float"].astype(int)
 
-# Ken de weegfactor/impactwaarde toe (ook voor oudere bestanden zonder 'waarde')
+# Ken de weegfactor/impactwaarde toe
 if "waarde" not in df.columns:
-    df["waarde"] = df["event"].map(EVENT_VALUES).fillna(0)
+    df["waarde"] = df["event"].map(EVENT_VALUES).fillna(0).astype(int)
 else:
-    df["waarde"] = df["waarde"].fillna(df["event"].map(EVENT_VALUES)).fillna(0)
+    df["waarde"] = df["waarde"].fillna(df["event"].map(EVENT_VALUES)).fillna(0).astype(int)
 
 # Score Berekening
 goals_wij = len(df[(df["functie"] == "Aanvallen") & (df["event"] == "Benutten van een scoringskans")])
@@ -286,7 +297,7 @@ with tab2:
 
     periodes = sorted(df["periode"].unique())
 
-    # --- 1. MATRIX GRAFIEK PER PERIODE ---
+    # --- 1. MATRIX GRAFIEK MET ORANJE-NAAR-GROEN KLEURENSCHEMA ---
     st.markdown("##### 🟩 Gebeurtenissen per Tijdsinterval Matrix")
 
     col_interval, col_groep = st.columns([1, 2])
@@ -315,21 +326,22 @@ with tab2:
         df_p["tijdsblok_start"] = (df_p["minuut_int"] // bin_minutes) * bin_minutes
         df_p["tijdsblok_label"] = df_p["tijdsblok_start"].apply(lambda x: f"{x}-{x+bin_minutes}m")
 
-        df_matrix = df_p.groupby(["tijdsblok_start", "tijdsblok_label", y_as_keuze, "functie"]).size().reset_index(name="aantal")
+        # Groeperen en gemiddelde impactwaarde berekenen voor kleuring
+        df_matrix = df_p.groupby(["tijdsblok_start", "tijdsblok_label", y_as_keuze, "waarde"]).size().reset_index(name="aantal")
 
         fig_matrix = px.scatter(
             df_matrix,
             x="tijdsblok_start",
             y=y_as_keuze,
-            color="functie",
+            color="waarde",
             size="aantal",
             size_max=14,
-            color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"},
-            hover_data={"aantal": True, "tijdsblok_label": True, "tijdsblok_start": False},
+            color_discrete_map=COLOR_MAP_WAARDE,
+            hover_data={"aantal": True, "tijdsblok_label": True, "waarde": True, "tijdsblok_start": False},
             labels={
                 y_as_keuze: "Gebeurtenis / Taak" if y_as_keuze == "event" else "Teamtaak",
                 "tijdsblok_start": f"Speelminuut (Periode {p})",
-                "functie": "Teamfunctie",
+                "waarde": "Actiewaarde",
                 "aantal": "Aantal acties"
             },
             title=f"Uitvoering van acties over tijd — Periode {p} (Interval: per {bin_minutes} min)"
@@ -337,7 +349,7 @@ with tab2:
 
         fig_matrix.update_traces(
             marker=dict(symbol="square"),
-            opacity=0.85
+            opacity=0.9
         )
 
         fig_matrix.update_layout(
@@ -345,7 +357,7 @@ with tab2:
             margin=dict(l=20, r=20, t=40, b=20),
             xaxis=dict(dtick=bin_minutes, showgrid=True, gridcolor="#2c3e50", zeroline=False),
             yaxis=dict(showgrid=True, gridcolor="#2c3e50", autorange="reversed"),
-            legend=dict(title="Teamfunctie", orientation="v")
+            legend=dict(title="Impactwaarde", orientation="v")
         )
 
         st.plotly_chart(fig_matrix, use_container_width=True)
