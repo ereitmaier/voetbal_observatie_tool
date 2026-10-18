@@ -7,14 +7,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.2.0"
 
 # --- CONFIGURATIE ---
-SERVER_PHP_URL = "https://jouw-domein.nl/get_matches.php"
-SERVER_DATA_BASE_URL = "https://jouw-domein.nl/data/"
+SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
+SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
 STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
 
-# Fallback mapping voor eerdere JSON-bestanden die geen expliciete 'waarde' velden hadden
+# Fallback mapping voor eerdere JSON-bestanden zonder 'waarde'
 EVENT_VALUES = {
     # Aanvallen - Opbouwen
     "Balverlies eigen helft": -2,
@@ -33,15 +33,15 @@ EVENT_VALUES = {
     "Tegenpartij benut scoringskans": -3
 }
 
-# Kleurenverloop op basis van actiewaarde (-3 t/m +3)
+# Discrete kleurenschaal: Rood (-3) via Oranje (0) naar Groen (+3)
 COLOR_MAP_WAARDE = {
-    -3: "#c0392b",  # Donkerrood (Tegendoelpunt)
-    -2: "#e74c3c",  # Rood (Groot balverlies)
-    -1: "#e67e22",  # Rood-Oranje (Balverlies)
-     0: "#f39c12",  # Oranje (Neutraal)
-     1: "#f1c40f",  # Geel / Amber (Licht positief)
-     2: "#2ecc71",  # Lichtgroen / Lime (Kans / Redding)
-     3: "#27ae60"   # Donkergroen (Doelpunt)
+    "-3": "#c0392b",  # Donkerrood (Tegendoelpunt)
+    "-2": "#e74c3c",  # Rood (Groot balverlies)
+    "-1": "#e67e22",  # Rood-Oranje (Balverlies)
+     "0": "#f39c12",  # Oranje (Neutraal)
+    "+1": "#f1c40f",  # Geel / Amber (Licht positief)
+    "+2": "#2ecc71",  # Lichtgroen / Lime (Kans / Redding)
+    "+3": "#27ae60"   # Donkergroen (Doelpunt)
 }
 
 st.set_page_config(
@@ -237,11 +237,13 @@ def time_to_minutes(t_str):
 df["minuut_float"] = df["tijd"].apply(time_to_minutes)
 df["minuut_int"] = df["minuut_float"].astype(int)
 
-# Ken de weegfactor/impactwaarde toe
+# Ken de numerieke én geformatteerde string-waarde toe
 if "waarde" not in df.columns:
     df["waarde"] = df["event"].map(EVENT_VALUES).fillna(0).astype(int)
 else:
     df["waarde"] = df["waarde"].fillna(df["event"].map(EVENT_VALUES)).fillna(0).astype(int)
+
+df["waarde_str"] = df["waarde"].apply(lambda x: f"+{int(x)}" if x > 0 else str(int(x)))
 
 # Score Berekening
 goals_wij = len(df[(df["functie"] == "Aanvallen") & (df["event"] == "Benutten van een scoringskans")])
@@ -280,16 +282,55 @@ with tab1:
     col_left, col_right = st.columns(2)
     with col_left:
         st.subheader("Verdeling Teamfuncties")
-        fig_func = px.pie(df, names="functie", color="functie", color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"}, hole=0.4)
+        fig_func = px.pie(
+            df,
+            names="functie",
+            color="functie",
+            color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"},
+            hole=0.4
+        )
         st.plotly_chart(fig_func, use_container_width=True)
+
     with col_right:
         st.subheader("Aantal gebeurtenissen per Teamtaak")
-        fig_taak = px.bar(df, x="taak", color="functie", color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"}, barmode="group")
+        fig_taak = px.bar(
+            df,
+            x="taak",
+            color="functie",
+            color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"},
+            barmode="group"
+        )
         st.plotly_chart(fig_taak, use_container_width=True)
 
+    # --- GEDETAILLEERDE GEBEURTENISSEN DISCREET GEKLEURD VAN ROOD (-3) NAAR GROEN (+3) ---
     st.subheader("Gedetailleerde Gebeurtenissen per Taak")
-    fig_event = px.bar(df, y="event", color="taak", orientation="h")
-    fig_event.update_layout(yaxis={'categoryorder':'total ascending'}, height=400)
+
+    df_events_count = df.groupby(["event", "taak", "waarde_str"]).size().reset_index(name="aantal")
+
+    fig_event = px.bar(
+        df_events_count,
+        y="event",
+        x="aantal",
+        color="waarde_str",
+        orientation="h",
+        color_discrete_map=COLOR_MAP_WAARDE,
+        category_orders={"waarde_str": ["-3", "-2", "-1", "0", "+1", "+2", "+3"]},
+        hover_data={"waarde_str": True, "taak": True, "aantal": True},
+        labels={
+            "event": "Gebeurtenis",
+            "aantal": "Aantal keer voorgekomen",
+            "waarde_str": "Impactwaarde",
+            "taak": "Teamtaak"
+        }
+    )
+
+    fig_event.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        height=450,
+        xaxis=dict(showgrid=True, gridcolor="#2c3e50"),
+        legend=dict(title="Impactwaarde", orientation="v")
+    )
+
     st.plotly_chart(fig_event, use_container_width=True)
 
 with tab2:
@@ -297,7 +338,7 @@ with tab2:
 
     periodes = sorted(df["periode"].unique())
 
-    # --- 1. MATRIX GRAFIEK MET ORANJE-NAAR-GROEN KLEURENSCHEMA ---
+    # --- 1. MATRIX GRAFIEK MET ROOD-NAAR-GROEN KLEURENSCHEMA ---
     st.markdown("##### 🟩 Gebeurtenissen per Tijdsinterval Matrix")
 
     col_interval, col_groep = st.columns([1, 2])
@@ -326,22 +367,22 @@ with tab2:
         df_p["tijdsblok_start"] = (df_p["minuut_int"] // bin_minutes) * bin_minutes
         df_p["tijdsblok_label"] = df_p["tijdsblok_start"].apply(lambda x: f"{x}-{x+bin_minutes}m")
 
-        # Groeperen en gemiddelde impactwaarde berekenen voor kleuring
-        df_matrix = df_p.groupby(["tijdsblok_start", "tijdsblok_label", y_as_keuze, "waarde"]).size().reset_index(name="aantal")
+        df_matrix = df_p.groupby(["tijdsblok_start", "tijdsblok_label", y_as_keuze, "waarde_str"]).size().reset_index(name="aantal")
 
         fig_matrix = px.scatter(
             df_matrix,
             x="tijdsblok_start",
             y=y_as_keuze,
-            color="waarde",
+            color="waarde_str",
             size="aantal",
             size_max=14,
             color_discrete_map=COLOR_MAP_WAARDE,
-            hover_data={"aantal": True, "tijdsblok_label": True, "waarde": True, "tijdsblok_start": False},
+            category_orders={"waarde_str": ["-3", "-2", "-1", "0", "+1", "+2", "+3"]},
+            hover_data={"aantal": True, "tijdsblok_label": True, "waarde_str": True, "tijdsblok_start": False},
             labels={
                 y_as_keuze: "Gebeurtenis / Taak" if y_as_keuze == "event" else "Teamtaak",
                 "tijdsblok_start": f"Speelminuut (Periode {p})",
-                "waarde": "Actiewaarde",
+                "waarde_str": "Impactwaarde",
                 "aantal": "Aantal acties"
             },
             title=f"Uitvoering van acties over tijd — Periode {p} (Interval: per {bin_minutes} min)"
