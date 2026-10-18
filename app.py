@@ -8,13 +8,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Import voor PDF Generatie
+# Imports voor PDF Generatie zonder Kaleido
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 
 # --- CONFIGURATIE ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
@@ -400,7 +400,7 @@ with tab2:
 
         st.plotly_chart(fig_momentum, use_container_width=True)
 
-# --- FUNCTIE OM PDF RAPPORT TE GENEREREN ZONDER KALEIDO ---
+# --- FUNCTIE OM PURE PYTHON PDF RAPPORT TE GENEREREN ZONDER KALEIDO ---
 def generate_pdf_report(df, wedstrijd_info):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
