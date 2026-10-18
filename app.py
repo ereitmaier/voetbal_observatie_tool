@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import urllib.parse
 import urllib.request
 import glob
@@ -8,12 +7,31 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 
 # --- CONFIGURATIE (Pas dit aan naar jouw server en Streamlit Cloud URLs) ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
 SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
 STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
+
+# Fallback mapping voor eerdere JSON-bestanden die geen expliciete 'waarde' velden hadden
+EVENT_VALUES = {
+    # Aanvallen - Opbouwen
+    "Balverlies eigen helft": -2,
+    "Balverlies helft tegenpartij": -1,
+    "Creëren van een scoringskans": 2,
+    # Aanvallen - Scoren
+    "Missen van een scoringskans": 1,
+    "Redding van keeper of schot geblokt": 2,
+    "Benutten van een scoringskans": 3,
+    # Verdedigen - Verstoren opbouw
+    "Balwinst helft tegenpartij": 2,
+    "Balwinst eigen helft": 1,
+    "Tegenpartij creëert scoringskans": -1,
+    # Verdedigen - Voorkomen van scoren
+    "Tegenpartij mist de scoringskans": 0,
+    "Tegenpartij benut scoringskans": -3
+}
 
 st.set_page_config(
     page_title=f"Voetbal Observatie Dashboard v{APP_VERSION}",
@@ -26,24 +44,23 @@ st.title("⚽ Voetbal Observatie Dashboard")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 match_data = None
 current_token = None
+selected_filename = None
 
 query_params = st.query_params
 token_param = query_params.get("token", None)
 
-# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN (VOOR STREAMLIT CLOUD / DELEN) ---
+# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN ---
 if token_param:
     current_token = token_param
     try:
-        # Vraag aan get_matches.php welk bestand bij de hash/token hoort
         token_resolve_url = f"{SERVER_PHP_URL}?token={token_param}"
         req = urllib.request.Request(token_resolve_url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as resp:
             token_res = json.loads(resp.read().decode('utf-8'))
 
             if token_res.get("status") == "success":
-                filename = token_res["filename"]
-                # Haal het specifieke JSON-bestand op uit /data/
-                file_url = SERVER_DATA_BASE_URL + filename
+                selected_filename = token_res["filename"]
+                file_url = SERVER_DATA_BASE_URL + selected_filename
                 file_req = urllib.request.Request(file_url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(file_req) as f_resp:
                     match_data = json.loads(f_resp.read().decode('utf-8'))
@@ -59,7 +76,6 @@ if not match_data:
 
     matches_list = []
 
-    # Optie A: Lokale /data/ map (Desktop modus)
     if os.path.exists(DATA_DIR):
         local_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
         for f_path in local_files:
@@ -86,7 +102,6 @@ if not match_data:
                 label = fname
             matches_list.append({"filename": fname, "label": label, "source": "local"})
 
-    # Optie B: Server overzicht ophalen (als er geen token is ingegeven)
     if not matches_list and SERVER_PHP_URL:
         try:
             req = urllib.request.Request(SERVER_PHP_URL, headers={'User-Agent': 'Mozilla/5.0'})
@@ -114,7 +129,6 @@ if not match_data:
         except Exception as e:
             st.sidebar.warning("⚠️ Kon geen verbinding maken met get_matches.php op de server.")
 
-    # Dropdown weergave
     if matches_list:
         labels = [m["label"] for m in matches_list]
         selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels)
@@ -134,15 +148,13 @@ if not match_data:
         if uploaded_file:
             match_data = json.load(uploaded_file)
 
-# --- 3. DELEN FUNCTIONALITEIT (ALTIJD BESCHIKBAAR) ---
+# --- 3. DELEN FUNCTIONALITEIT ---
 if match_data:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
 
-    # Als er nog geen token actief is, proberen we de token op te halen/genereren
-    if not current_token and 'selected_filename' in locals() and selected_filename:
+    if not current_token and selected_filename:
         try:
-            # Vraag aan get_matches.php de token die bij dit bestand hoort
             token_query_url = f"{SERVER_PHP_URL}?get_token_for={urllib.parse.quote(selected_filename)}"
             req = urllib.request.Request(token_query_url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=3) as resp:
@@ -152,10 +164,9 @@ if match_data:
         except:
             pass
 
-    # Genereer de deel-URL op basis van token (of fallback op match parameter)
     if current_token:
         share_url = f"{STREAMLIT_CLOUD_URL}/?token={current_token}"
-    elif 'selected_filename' in locals() and selected_filename:
+    elif selected_filename:
         share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
     else:
         share_url = STREAMLIT_CLOUD_URL
@@ -215,6 +226,12 @@ def time_to_minutes(t_str):
 df["minuut_float"] = df["tijd"].apply(time_to_minutes)
 df["minuut_int"] = df["minuut_float"].astype(int)
 
+# Ken de weegfactor/impactwaarde toe (ook voor oudere bestanden zonder 'waarde')
+if "waarde" not in df.columns:
+    df["waarde"] = df["event"].map(EVENT_VALUES).fillna(0)
+else:
+    df["waarde"] = df["waarde"].fillna(df["event"].map(EVENT_VALUES)).fillna(0)
+
 # Score Berekening
 goals_wij = len(df[(df["functie"] == "Aanvallen") & (df["event"] == "Benutten van een scoringskans")])
 goals_zij = len(df[(df["functie"] == "Verdedigen") & (df["event"] == "Tegenpartij benut scoringskans")])
@@ -266,30 +283,116 @@ with tab1:
 
 with tab2:
     st.subheader("⏱️ Tijdsaanduiding & Verloop van de Wedstrijd")
+
     periodes = sorted(df["periode"].unique())
-    selected_p = st.selectbox("Selecteer Periode voor Tijdlijn:", ["Alle Periodes"] + [f"Periode {p}" for p in periodes])
 
-    df_p = df.copy()
-    if selected_p != "Alle Periodes":
-        df_p = df_p[df_p["periode"] == int(selected_p.split(" ")[1])]
+    # --- 1. MATRIX GRAFIEK PER PERIODE ---
+    st.markdown("##### 🟩 Gebeurtenissen per Tijdsinterval Matrix")
 
-    df_p = df_p.sort_values(by="minuut_float")
+    col_interval, col_groep = st.columns([1, 2])
+    with col_interval:
+        bin_minutes = st.select_slider(
+            "Kies tijdsinterval (minuten):",
+            options=[1, 5, 10, 15],
+            value=5
+        )
+    with col_groep:
+        y_as_keuze = st.radio(
+            "Groepeer y-as op:",
+            options=["event", "taak"],
+            format_func=lambda x: "Specifieke Gebeurtenis (Event)" if x == "event" else "Teamtaak",
+            horizontal=True
+        )
 
-    st.markdown("##### 📈 Opbouw van de acties (Cumulatief over tijd)")
-    df_p["teller"] = 1
-    df_p["cumulatief"] = df_p.groupby("functie")["teller"].cumsum()
-    fig_cum = px.line(df_p, x="minuut_float", y="cumulatief", color="functie", markers=True, color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"})
-    st.plotly_chart(fig_cum, use_container_width=True)
+    for p in periodes:
+        st.markdown(f"###### 📍 Periode {p}")
+        df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
 
-    st.markdown("##### 📊 Intensiteit per 5 Speelminuten")
-    bin_size = 5
-    df_p["tijdsblok"] = (df_p["minuut_int"] // bin_size) * bin_size
-    df_p["tijdsblok_label"] = df_p["tijdsblok"].apply(lambda x: f"{x}-{x+bin_size} min")
-    df_block = df_p.groupby(["tijdsblok", "tijdsblok_label", "functie"]).size().reset_index(name="aantal")
-    fig_block = px.bar(df_block, x="tijdsblok_label", y="aantal", color="functie", barmode="group", color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"})
-    st.plotly_chart(fig_block, use_container_width=True)
+        if df_p.empty:
+            st.info(f"Geen gebeurtenissen vastgelegd in Periode {p}.")
+            continue
+
+        df_p["tijdsblok_start"] = (df_p["minuut_int"] // bin_minutes) * bin_minutes
+        df_p["tijdsblok_label"] = df_p["tijdsblok_start"].apply(lambda x: f"{x}-{x+bin_minutes}m")
+
+        df_matrix = df_p.groupby(["tijdsblok_start", "tijdsblok_label", y_as_keuze, "functie"]).size().reset_index(name="aantal")
+
+        fig_matrix = px.scatter(
+            df_matrix,
+            x="tijdsblok_start",
+            y=y_as_keuze,
+            color="functie",
+            size="aantal",
+            size_max=14,
+            color_discrete_map={"Aanvallen": "#27ae60", "Verdedigen": "#c0392b"},
+            hover_data={"aantal": True, "tijdsblok_label": True, "tijdsblok_start": False},
+            labels={
+                y_as_keuze: "Gebeurtenis / Taak" if y_as_keuze == "event" else "Teamtaak",
+                "tijdsblok_start": f"Speelminuut (Periode {p})",
+                "functie": "Teamfunctie",
+                "aantal": "Aantal acties"
+            },
+            title=f"Uitvoering van acties over tijd — Periode {p} (Interval: per {bin_minutes} min)"
+        )
+
+        fig_matrix.update_traces(
+            marker=dict(symbol="square"),
+            opacity=0.85
+        )
+
+        fig_matrix.update_layout(
+            height=380,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis=dict(dtick=bin_minutes, showgrid=True, gridcolor="#2c3e50", zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor="#2c3e50", autorange="reversed"),
+            legend=dict(title="Teamfunctie", orientation="v")
+        )
+
+        st.plotly_chart(fig_matrix, use_container_width=True)
+
+    # --- 2. WEDSTRIJDMOMENTUM & CUMULATIEVE IMPACT ---
+    st.markdown("---")
+    st.markdown("##### 📉 Wedstrijdmomentum & Cumulatieve Impact Score")
+
+    for p in periodes:
+        df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
+        if df_p.empty:
+            continue
+
+        df_p["cumulatieve_impact"] = df_p["waarde"].cumsum()
+
+        fig_momentum = px.area(
+            df_p,
+            x="minuut_float",
+            y="cumulatieve_impact",
+            markers=True,
+            hover_data={"tijd": True, "event": True, "waarde": True, "cumulatieve_impact": True},
+            labels={
+                "minuut_float": f"Speelminuut (Periode {p})",
+                "cumulatieve_impact": "Cumulatieve Score",
+                "waarde": "Impactwaarde",
+                "event": "Gebeurtenis"
+            },
+            title=f"Wedstrijddynamiek Periode {p} (Positief = Overwicht Zaandijk, Negatief = Onder Druk)"
+        )
+
+        fig_momentum.add_hline(y=0, line_dash="dash", line_color="#7f8c8d")
+
+        fig_momentum.update_traces(
+            line_color="#2ecc71",
+            fillcolor="rgba(46, 204, 113, 0.2)"
+        )
+
+        fig_momentum.update_layout(
+            height=320,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis=dict(showgrid=True, gridcolor="#2c3e50"),
+            yaxis=dict(showgrid=True, gridcolor="#2c3e50")
+        )
+
+        st.plotly_chart(fig_momentum, use_container_width=True)
 
 with tab3:
     st.subheader("Alle Vastgelegde Gebeurtenissen")
-    st.dataframe(df[["periode", "tijd", "minuut_float", "functie", "taak", "event"]], use_container_width=True)
+    st.dataframe(df[["periode", "tijd", "minuut_float", "functie", "taak", "event", "waarde"]], use_container_width=True)
     st.download_button("📥 Download deze data als CSV", df.to_csv(index=False).encode('utf-8'), "export.csv", "text/csv")
