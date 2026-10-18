@@ -12,12 +12,12 @@ import streamlit as st
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.graphics.shapes import Drawing, String, Line, PolyLine, Rect
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.5.0"
 
 # --- CONFIGURATIE ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
@@ -42,7 +42,7 @@ EVENT_VALUES = {
     "Tegenpartij benut scoringskans": -3
 }
 
-COLOR_MAP_WAARDE = {
+COLOR_MAP_HEX = {
     "-3": "#c0392b",
     "-2": "#e74c3c",
     "-1": "#e67e22",
@@ -285,7 +285,7 @@ with tab1:
         x="aantal",
         color="waarde_str",
         orientation="h",
-        color_discrete_map=COLOR_MAP_WAARDE,
+        color_discrete_map=COLOR_MAP_HEX,
         category_orders={"waarde_str": ["-3", "-2", "-1", "0", "+1", "+2", "+3"]},
         hover_data={"waarde_str": True, "taak": True, "aantal": True},
         labels={
@@ -345,7 +345,7 @@ with tab2:
             color="waarde_str",
             size="aantal",
             size_max=14,
-            color_discrete_map=COLOR_MAP_WAARDE,
+            color_discrete_map=COLOR_MAP_HEX,
             category_orders={"waarde_str": ["-3", "-2", "-1", "0", "+1", "+2", "+3"]},
             hover_data={"aantal": True, "tijdsblok_label": True, "waarde_str": True, "tijdsblok_start": False},
             labels={
@@ -403,7 +403,122 @@ with tab2:
 
         st.plotly_chart(fig_momentum, use_container_width=True)
 
-# --- FUNCTIE VOOR COMPLEET PDF RAPPORT MET VECTOR TIJDGRAFIEKEN ---
+# --- FUNCTIE OM HORIZONTALE STAAFDIAGRAM PER GEBEURTENIS IN PDF TE TEKENEN ---
+def draw_pdf_horizontal_events_chart(df):
+    df_events = df.groupby(["event", "waarde_str"]).size().reset_index(name="aantal")
+    df_events = df_events.sort_values(by="aantal", ascending=True)
+
+    if df_events.empty:
+        return Drawing(480, 20)
+
+    margin_l = 150
+    margin_r = 25
+    margin_b = 20
+    margin_t = 15
+
+    chart_w = 480
+    row_h = 18
+    chart_h = margin_b + margin_t + (len(df_events) * row_h)
+
+    d = Drawing(chart_w, chart_h)
+    d.add(Rect(0, 0, chart_w, chart_h, fillColor=colors.HexColor("#181825"), strokeColor=None))
+
+    max_aantal = max(df_events["aantal"].max(), 1)
+    plot_w = chart_w - margin_l - margin_r
+
+    # Gridlijnen X-as
+    step = max(1, int(max_aantal / 5))
+    for v in range(0, max_aantal + step, step):
+        px_val = margin_l + (v / max_aantal) * plot_w
+        d.add(Line(px_val, margin_b, px_val, chart_h - margin_t, strokeColor=colors.HexColor("#2c3e50"), strokeWidth=0.8))
+        d.add(String(px_val - 3, 6, str(v), fontSize=7, fillColor=colors.HexColor("#a6adc8")))
+
+    # Horizontale staven
+    for idx, row in df_events.reset_index(drop=True).iterrows():
+        ev_name = str(row["event"])
+        val_count = int(row["aantal"])
+        w_val = str(row["waarde_str"])
+
+        py_val = margin_b + (idx * row_h) + 3
+        bar_w = (val_count / max_aantal) * plot_w
+        color_hex = COLOR_MAP_HEX.get(w_val, "#3498db")
+
+        # Label Y-as
+        short_name = ev_name[:24] + '..' if len(ev_name) > 25 else ev_name
+        d.add(String(10, py_val + 3, short_name, fontSize=7, fillColor=colors.HexColor("#ffffff")))
+
+        # Staaf
+        d.add(Rect(margin_l, py_val, bar_w, 12, fillColor=colors.HexColor(color_hex), strokeColor=None))
+        d.add(String(margin_l + bar_w + 4, py_val + 2, str(val_count), fontSize=7, fillColor=colors.HexColor("#ffffff")))
+
+    return d
+
+# --- FUNCTIE OM VISUELE TIJDSMATRIX GRAFIEK IN PDF TE TEKENEN ---
+def draw_pdf_time_matrix_chart(df_period, periode_num):
+    events_order = [
+        "Benutten van een scoringskans",
+        "Redding van keeper of schot geblokt",
+        "Creëren van een scoringskans",
+        "Balwinst helft tegenpartij",
+        "Missen van een scoringskans",
+        "Balwinst eigen helft",
+        "Tegenpartij mist de scoringskans",
+        "Tegenpartij creëert scoringskans",
+        "Balverlies helft tegenpartij",
+        "Balverlies eigen helft",
+        "Tegenpartij benut scoringskans"
+    ]
+
+    present_events = [e for e in events_order if e in df_period["event"].unique()]
+    if not present_events:
+        present_events = list(df_period["event"].unique())
+
+    margin_l = 150
+    margin_r = 15
+    margin_b = 25
+    margin_t = 15
+
+    chart_w = 480
+    row_h = 16
+    chart_h = margin_b + margin_t + (len(present_events) * row_h)
+
+    d = Drawing(chart_w, chart_h)
+    d.add(Rect(0, 0, chart_w, chart_h, fillColor=colors.HexColor("#181825"), strokeColor=None))
+
+    x_start = margin_l
+    x_end = chart_w - margin_r
+    plot_w = x_end - x_start
+
+    for m in range(0, 50, 5):
+        px_val = x_start + (m / 45.0) * plot_w
+        d.add(Line(px_val, margin_b, px_val, chart_h - margin_t, strokeColor=colors.HexColor("#2c3e50"), strokeWidth=0.8))
+        d.add(String(px_val - 4, 8, str(m), fontSize=7, fillColor=colors.HexColor("#a6adc8")))
+
+    for idx, ev_name in enumerate(present_events):
+        py_val = margin_b + (idx * row_h) + (row_h / 2)
+        d.add(Line(x_start, py_val, x_end, py_val, strokeColor=colors.HexColor("#2c3e50"), strokeWidth=0.5))
+
+        short_name = ev_name[:24] + '..' if len(ev_name) > 25 else ev_name
+        d.add(String(10, py_val - 3, short_name, fontSize=7, fillColor=colors.HexColor("#ffffff")))
+
+    df_period["tijdsblok_5m"] = (df_period["minuut_int"] // 5) * 5
+
+    for _, row in df_period.iterrows():
+        ev = row["event"]
+        m_5m = row["tijdsblok_5m"]
+        w_val = str(row["waarde_str"])
+
+        if ev in present_events:
+            idx_y = present_events.index(ev)
+            px_val = x_start + (m_5m / 45.0) * plot_w
+            py_val = margin_b + (idx_y * row_h) + (row_h / 2)
+
+            color_hex = COLOR_MAP_HEX.get(w_val, "#7f8c8d")
+            d.add(Rect(px_val - 4, py_val - 4, 8, 8, fillColor=colors.HexColor(color_hex), strokeColor=None))
+
+    return d
+
+# --- FUNCTIE OM COMPLEET PDF RAPPORT TE GENEREREN ---
 def generate_pdf_report(df, wedstrijd_info):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -421,13 +536,14 @@ def generate_pdf_report(df, wedstrijd_info):
     subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor("#7f8c8d"), spaceAfter=15)
     section_style = ParagraphStyle('SectionStyle', parent=styles['Heading2'], fontSize=13, textColor=colors.HexColor("#27ae60"), spaceBefore=14, spaceAfter=8)
     hdr_style = ParagraphStyle('HdrStyle', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.white)
-    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor("#2c3e50"))
+    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor("#2c3e50"))
     cell_center = ParagraphStyle('CellCenter', parent=cell_style, alignment=1)
 
     wij = wedstrijd_info.get('wij', 'Wij')
     zij = wedstrijd_info.get('zij', 'Zij')
     datum_str = pd.Timestamp.now().strftime('%d-%m-%Y %H:%M')
 
+    # ================= PAGINA 1 =================
     # 1. Header
     story.append(Paragraph(f"⚽ Wedstrijdrapport: {wij} vs {zij}", title_style))
     story.append(Paragraph(f"Gegenereerd op: {datum_str} | Observatietool v{APP_VERSION}", subtitle_style))
@@ -453,12 +569,12 @@ def generate_pdf_report(df, wedstrijd_info):
     story.append(t_stats)
     story.append(Spacer(1, 10))
 
-    # 3. Vector Grafiek 1: Cirkeldiagram Teamfuncties
-    story.append(Paragraph("📈 Verdeling Teamfuncties", section_style))
-    d_pie = Drawing(480, 150)
+    # 3. TAB 1 - Cirkeldiagram Teamfuncties
+    story.append(Paragraph("📈 Verdeling Teamfuncties (Tab 1)", section_style))
+    d_pie = Drawing(480, 140)
     pc = Pie()
     pc.x = 140
-    pc.y = 10
+    pc.y = 5
     pc.width = 130
     pc.height = 130
     pc.data = [aanval_acties if aanval_acties else 1, verdedig_acties if verdedig_acties else 1]
@@ -469,18 +585,18 @@ def generate_pdf_report(df, wedstrijd_info):
     story.append(d_pie)
     story.append(Spacer(1, 10))
 
-    # 4. Vector Grafiek 2: Staafdiagram Aantal Acties per Teamtaak
-    story.append(Paragraph("📊 Aantal Gebeurtenissen per Teamtaak", section_style))
+    # 4. TAB 1 - Staafdiagram per Teamtaak
+    story.append(Paragraph("📊 Aantal Gebeurtenissen per Teamtaak (Tab 1)", section_style))
     df_taak_counts = df.groupby("taak").size().reset_index(name="aantal")
     taken = df_taak_counts["taak"].tolist()
     aantallen = df_taak_counts["aantal"].tolist()
 
     if taken and aantallen:
-        d_bar = Drawing(480, 150)
+        d_bar = Drawing(480, 140)
         bc = VerticalBarChart()
         bc.x = 40
         bc.y = 25
-        bc.height = 110
+        bc.height = 100
         bc.width = 400
         bc.data = [aantallen]
         bc.categoryAxis.categoryNames = [t[:18] + '...' if len(t) > 18 else t for t in taken]
@@ -491,61 +607,18 @@ def generate_pdf_report(df, wedstrijd_info):
         bc.bars[0].fillColor = colors.HexColor("#3498db")
         d_bar.add(bc)
         story.append(d_bar)
-        story.append(Spacer(1, 15))
 
-    # 5. VECTOR GRAFIEK 3: WEDSTRIJDMOMENTUM & TIJDLIN (LIJNGRAFIEK)
-    story.append(Paragraph("⏱️ Wedstrijdmomentum Over Tijd (Cumulatieve Impact)", section_style))
+    # ================= PAGINA 2 =================
+    story.append(PageBreak())
 
-    periodes = sorted(df["periode"].unique())
-    for p in periodes:
-        df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
-        if df_p.empty: continue
+    # 5. TAB 1 - HORIZONTALE STAAFDIAGRAM GEBEURTENISSEN PER TAAK
+    story.append(Paragraph("📊 Gedetailleerde Gebeurtenissen per Taak — Grafiek (Tab 1)", section_style))
+    d_horiz_events = draw_pdf_horizontal_events_chart(df)
+    story.append(d_horiz_events)
+    story.append(Spacer(1, 15))
 
-        df_p["cumulatieve_impact"] = df_p["waarde"].cumsum()
-
-        times = df_p["minuut_float"].tolist()
-        scores = df_p["cumulatieve_impact"].tolist()
-
-        d_line = Drawing(480, 140)
-
-        # Bepaal schaal
-        min_x, max_x = 0, max(max(times) if times else 45, 45)
-        min_y = min(min(scores) if scores else 0, -2)
-        max_y = max(max(scores) if scores else 0, 2)
-
-        margin_l, margin_r, margin_t, margin_b = 40, 20, 20, 25
-        w_graph = 480 - margin_l - margin_r
-        h_graph = 140 - margin_t - margin_b
-
-        # Nul-lijn (Referentielijn)
-        y_zero = margin_b + (0 - min_y) / (max_y - min_y if max_y != min_y else 1) * h_graph
-        d_line.add(Line(margin_l, y_zero, margin_l + w_graph, y_zero, strokeColor=colors.HexColor("#7f8c8d"), strokeWidth=1, strokeDashArray=[2,2]))
-
-        # Punten omzetten naar PDF-coördinaten
-        points = []
-        for x, y in zip(times, scores):
-            px_val = margin_l + (x - min_x) / (max_x - min_x) * w_graph
-            py_val = margin_b + (y - min_y) / (max_y - min_y if max_y != min_y else 1) * h_graph
-            points.append((px_val, py_val))
-
-        # Lijn tekenen
-        if len(points) > 1:
-            flat_points = [coord for pt in points for coord in pt]
-            d_line.add(PolyLine(flat_points, strokeColor=colors.HexColor("#2ecc71"), strokeWidth=2))
-
-        # Punten (stippen) markeren
-        for px_val, py_val in points:
-            d_line.add(Rect(px_val - 2, py_val - 2, 4, 4, fillColor=colors.HexColor("#27ae60"), strokeColor=None))
-
-        # Assen & Labels
-        d_line.add(String(margin_l - 25, y_zero - 3, "0", fontSize=8, fillColor=colors.HexColor("#7f8c8d")))
-        d_line.add(String(margin_l, 8, f"Periode {p} (0 - {int(max_x)} min)", fontSize=8, fillColor=colors.HexColor("#2c3e50")))
-
-        story.append(d_line)
-        story.append(Spacer(1, 10))
-
-    # 6. Gebeurtenissen per Taak & Impactwaarde Tabel
-    story.append(Paragraph("📋 Gedetailleerd Gebeurtenissen Overzicht", section_style))
+    # 6. TAB 1 - Gedetailleerde Gebeurtenissen Tabel
+    story.append(Paragraph("📋 Gedetailleerde Gebeurtenissen per Taak — Tabel (Tab 1)", section_style))
     df_summary = df.groupby(["taak", "event", "waarde_str", "waarde"]).size().reset_index(name="aantal")
     df_summary = df_summary.sort_values(by="waarde", ascending=True)
 
@@ -558,7 +631,7 @@ def generate_pdf_report(df, wedstrijd_info):
 
     for _, row in df_summary.iterrows():
         w_val = str(row["waarde_str"])
-        hex_color = COLOR_MAP_WAARDE.get(w_val, "#7f8c8d")
+        hex_color = COLOR_MAP_HEX.get(w_val, "#7f8c8d")
 
         impact_p = Paragraph(f"<font color='{hex_color}'><b>{w_val}</b></font>", cell_center)
 
@@ -574,10 +647,75 @@ def generate_pdf_report(df, wedstrijd_info):
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#242438")),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#bdc3c7")),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-        ('TOPPADDING', (0,0), (-1,-1), 5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
     ]))
     story.append(t_summary)
+
+    # ================= PAGINA 3 =================
+    story.append(PageBreak())
+
+    # 7. TAB 2 - VISUELE TIJDSMATRIX GRAFIEK (ACTIES OVER TIJD PER 5 MIN)
+    story.append(Paragraph("⏱️ Uitvoering van Acties Over Tijd — Tijdsmatrix Grafiek (Tab 2)", section_style))
+
+    periodes = sorted(df["periode"].unique())
+    for p in periodes:
+        df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
+        if df_p.empty: continue
+
+        story.append(Paragraph(f"<b>📍 Periode {p}</b>", ParagraphStyle('SubP', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor("#2c3e50"))))
+        story.append(Spacer(1, 4))
+
+        d_time_matrix = draw_pdf_time_matrix_chart(df_p, p)
+        story.append(d_time_matrix)
+        story.append(Spacer(1, 10))
+
+    # ================= PAGINA 4 =================
+    story.append(PageBreak())
+
+    # 8. TAB 2 - WEDSTRIJDMOMENTUM LIJNGRAFIEK
+    story.append(Paragraph("📉 Wedstrijdmomentum Over Tijd (Tab 2 Lijngrafiek)", section_style))
+
+    for p in periodes:
+        df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
+        if df_p.empty: continue
+
+        df_p["cumulatieve_impact"] = df_p["waarde"].cumsum()
+
+        times = df_p["minuut_float"].tolist()
+        scores = df_p["cumulatieve_impact"].tolist()
+
+        d_line = Drawing(480, 130)
+
+        min_x, max_x = 0, max(max(times) if times else 45, 45)
+        min_y = min(min(scores) if scores else 0, -2)
+        max_y = max(max(scores) if scores else 0, 2)
+
+        margin_l, margin_r, margin_t, margin_b = 35, 15, 15, 20
+        w_graph = 480 - margin_l - margin_r
+        h_graph = 130 - margin_t - margin_b
+
+        y_zero = margin_b + (0 - min_y) / (max_y - min_y if max_y != min_y else 1) * h_graph
+        d_line.add(Line(margin_l, y_zero, margin_l + w_graph, y_zero, strokeColor=colors.HexColor("#7f8c8d"), strokeWidth=1, strokeDashArray=[2,2]))
+
+        points = []
+        for x, y in zip(times, scores):
+            px_val = margin_l + (x - min_x) / (max_x - min_x) * w_graph
+            py_val = margin_b + (y - min_y) / (max_y - min_y if max_y != min_y else 1) * h_graph
+            points.append((px_val, py_val))
+
+        if len(points) > 1:
+            flat_points = [coord for pt in points for coord in pt]
+            d_line.add(PolyLine(flat_points, strokeColor=colors.HexColor("#2ecc71"), strokeWidth=2))
+
+        for px_val, py_val in points:
+            d_line.add(Rect(px_val - 2, py_val - 2, 4, 4, fillColor=colors.HexColor("#27ae60"), strokeColor=None))
+
+        d_line.add(String(margin_l - 20, y_zero - 3, "0", fontSize=8, fillColor=colors.HexColor("#7f8c8d")))
+        d_line.add(String(margin_l, 5, f"Periode {p} (0 - {int(max_x)} min)", fontSize=8, fillColor=colors.HexColor("#2c3e50")))
+
+        story.append(d_line)
+        story.append(Spacer(1, 8))
 
     doc.build(story)
     buffer.seek(0)
@@ -590,11 +728,11 @@ with tab3:
 
     with col_pdf:
         st.markdown("##### 📄 PDF Wedstrijdrapport")
-        st.caption("Genereer een printbaar PDF document met samenvatting, functieverdeling, tijdsverloop en gebeurtenissen.")
+        st.caption("Genereer een gepagineerd PDF document met alle visualisaties en tabellen uit Tab 1 en Tab 2 op eigen pagina's.")
         try:
             pdf_data = generate_pdf_report(df, wedstrijd_info)
             st.download_button(
-                label="📄 Download PDF Rapport (Met Alle Grafieken)",
+                label="📄 Download PDF Rapport (Netjes Gepagineerd)",
                 data=pdf_data,
                 file_name=f"Wedstrijdrapport_{team_wij_naam}_vs_{team_zij_naam}.pdf",
                 mime="application/pdf"
