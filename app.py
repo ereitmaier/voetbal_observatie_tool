@@ -1,5 +1,6 @@
 import os
 import json
+import io
 import urllib.parse
 import urllib.request
 import glob
@@ -7,14 +8,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "3.3.0"
+# Import voor PDF Generatie
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+
+APP_VERSION = "3.7.0"
 
 # --- CONFIGURATIE ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
 SERVER_DATA_BASE_URL = "https://team-level-up.com/otsv/data/"
 STREAMLIT_CLOUD_URL = "https://voetbalobservatietool-supifuf6eqyrufsb9vdbch.streamlit.app"
 
-# Fallback mapping voor eerdere JSON-bestanden zonder 'waarde'
 EVENT_VALUES = {
     # Aanvallen - Opbouwen
     "Balverlies eigen helft": -2,
@@ -33,15 +39,14 @@ EVENT_VALUES = {
     "Tegenpartij benut scoringskans": -3
 }
 
-# Discrete kleurenschaal: Rood (-3) via Oranje (0) naar Groen (+3)
 COLOR_MAP_WAARDE = {
-    "-3": "#c0392b",  # Donkerrood (Tegendoelpunt)
-    "-2": "#e74c3c",  # Rood (Groot balverlies)
-    "-1": "#e67e22",  # Rood-Oranje (Balverlies)
-     "0": "#f39c12",  # Oranje (Neutraal)
-    "+1": "#f1c40f",  # Geel / Amber (Licht positief)
-    "+2": "#2ecc71",  # Lichtgroen / Lime (Kans / Redding)
-    "+3": "#27ae60"   # Donkergroen (Doelpunt)
+    "-3": "#c0392b",
+    "-2": "#e74c3c",
+    "-1": "#e67e22",
+     "0": "#f39c12",
+    "+1": "#f1c40f",
+    "+2": "#2ecc71",
+    "+3": "#27ae60"
 }
 
 st.set_page_config(
@@ -60,12 +65,9 @@ selected_filename = None
 query_params = st.query_params
 token_param = query_params.get("token", None)
 
-# --- DETECTIE: DRAAIT DE APP LOKAAL OF IN DE CLOUD? ---
-# Op localhost / desktop is de beheerder-dropdown zichtbaar.
-# In de cloud / webversie mag ALLEEN de data van de specifieke token getoond worden.
 is_local = os.path.exists(DATA_DIR) and not os.environ.get("STREAMLIT_SERVER_GATHER_USAGE_STATS", False)
 
-# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN (VERPLICHT BIJ CLOUD TOEGANG) ---
+# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN ---
 if token_param:
     current_token = token_param
     try:
@@ -86,7 +88,7 @@ if token_param:
     except Exception as e:
         st.error(f"Fout bij het ophalen van de wedstrijddata: {e}")
 
-# --- 2. LOKALE BEHEERDER MODUS (UITSLUITEND BESCHIKBAAR OP LOCALHOST) ---
+# --- 2. LOKALE BEHEERDER MODUS ---
 if not match_data:
     if is_local:
         st.sidebar.header("🔍 Wedstrijd Selectie (Lokaal/Beheerder)")
@@ -131,7 +133,6 @@ if not match_data:
             if uploaded_file:
                 match_data = json.load(uploaded_file)
     else:
-        # Als er géén token is én de app draait online, blokkeren we toegang tot andere bestanden
         st.warning("🔒 Toegang geweigerd. Deze online omgeving vereist een geldige wedstrijd-link (token).")
         st.info("Open een geselecteerde wedstrijd rechtstreeks vanuit de observatietool op team-level-up.com.")
         st.sidebar.markdown("---")
@@ -208,7 +209,6 @@ def time_to_minutes(t_str):
 df["minuut_float"] = df["tijd"].apply(time_to_minutes)
 df["minuut_int"] = df["minuut_float"].astype(int)
 
-# Ken de numerieke én geformatteerde string-waarde toe
 if "waarde" not in df.columns:
     df["waarde"] = df["event"].map(EVENT_VALUES).fillna(0).astype(int)
 else:
@@ -247,7 +247,7 @@ col4.metric("Totaal Kansen", scoringskansen)
 
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["📊 Functies & Taken", "⏱️ Tijdlijn & Verloop", "📄 Ruwe Data"])
+tab1, tab2, tab3 = st.tabs(["📊 Functies & Taken", "⏱️ Tijdlijn & Verloop", "📄 Ruwe Data & PDF"])
 
 with tab1:
     col_left, col_right = st.columns(2)
@@ -273,9 +273,7 @@ with tab1:
         )
         st.plotly_chart(fig_taak, use_container_width=True)
 
-    # --- GEDETAILLEERDE GEBEURTENISSEN DISCREET GEKLEURD VAN ROOD (-3) NAAR GROEN (+3) ---
     st.subheader("Gedetailleerde Gebeurtenissen per Taak")
-
     df_events_count = df.groupby(["event", "taak", "waarde_str"]).size().reset_index(name="aantal")
 
     fig_event = px.bar(
@@ -306,12 +304,9 @@ with tab1:
 
 with tab2:
     st.subheader("⏱️ Tijdsaanduiding & Verloop van de Wedstrijd")
-
     periodes = sorted(df["periode"].unique())
 
-    # --- 1. MATRIX GRAFIEK MET ROOD-NAAR-GROEN KLEURENSCHEMA ---
     st.markdown("##### 🟩 Gebeurtenissen per Tijdsinterval Matrix")
-
     col_interval, col_groep = st.columns([1, 2])
     with col_interval:
         bin_minutes = st.select_slider(
@@ -359,11 +354,7 @@ with tab2:
             title=f"Uitvoering van acties over tijd — Periode {p} (Interval: per {bin_minutes} min)"
         )
 
-        fig_matrix.update_traces(
-            marker=dict(symbol="square"),
-            opacity=0.9
-        )
-
+        fig_matrix.update_traces(marker=dict(symbol="square"), opacity=0.9)
         fig_matrix.update_layout(
             height=380,
             margin=dict(l=20, r=20, t=40, b=20),
@@ -374,14 +365,12 @@ with tab2:
 
         st.plotly_chart(fig_matrix, use_container_width=True)
 
-    # --- 2. WEDSTRIJDMOMENTUM & CUMULATIEVE IMPACT ---
     st.markdown("---")
     st.markdown("##### 📉 Wedstrijdmomentum & Cumulatieve Impact Score")
 
     for p in periodes:
         df_p = df[df["periode"] == p].copy().sort_values(by="minuut_float")
-        if df_p.empty:
-            continue
+        if df_p.empty: continue
 
         df_p["cumulatieve_impact"] = df_p["waarde"].cumsum()
 
@@ -401,12 +390,7 @@ with tab2:
         )
 
         fig_momentum.add_hline(y=0, line_dash="dash", line_color="#7f8c8d")
-
-        fig_momentum.update_traces(
-            line_color="#2ecc71",
-            fillcolor="rgba(46, 204, 113, 0.2)"
-        )
-
+        fig_momentum.update_traces(line_color="#2ecc71", fillcolor="rgba(46, 204, 113, 0.2)")
         fig_momentum.update_layout(
             height=320,
             margin=dict(l=20, r=20, t=40, b=20),
@@ -416,7 +400,92 @@ with tab2:
 
         st.plotly_chart(fig_momentum, use_container_width=True)
 
+# --- FUNCTIE OM PDF RAPPORT TE GENEREREN ---
+def generate_pdf_report(df, wedstrijd_info, fig_func, fig_taak, fig_event):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor("#181825"), spaceAfter=10)
+    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor("#7f8c8d"), spaceAfter=15)
+    section_style = ParagraphStyle('SectionStyle', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor("#27ae60"), spaceBefore=10, spaceAfter=8)
+    normal_style = styles['Normal']
+
+    # Header
+    wij = wedstrijd_info.get('wij', 'Wij')
+    zij = wedstrijd_info.get('zij', 'Zij')
+    story.append(Paragraph(f"⚽ Wedstrijdrapport: {wij} vs {zij}", title_style))
+    story.append(Paragraph(f"Uitslag: {goals_wij} - {goals_zij} | Generatiedatum: {pd.Timestamp.now().strftime('%d-%m-%Y %H:%M')}", subtitle_style))
+    story.append(Spacer(1, 10))
+
+    # Statistieken Tabel
+    data_stats = [
+        ["Statistiek", "Waarde"],
+        ["Einduitslag", f"{goals_wij} - {goals_zij}"],
+        ["Totaal Aantal Acties", str(totaal_acties)],
+        ["Aanvallende Acties", f"{aanval_acties} ({round(aanval_acties/totaal_acties*100) if totaal_acties else 0}%)"],
+        ["Verdedigende Acties", f"{verdedig_acties} ({round(verdedig_acties/totaal_acties*100) if totaal_acties else 0}%)"],
+        ["Totaal Kansen", str(scoringskansen)]
+    ]
+    t_stats = Table(data_stats, colWidths=[200, 250])
+    t_stats.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (1,0), colors.HexColor("#242438")),
+        ('TEXTCOLOR', (0,0), (1,0), colors.white),
+        ('FONTNAME', (0,0), (1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#bdc3c7")),
+    ]))
+    story.append(t_stats)
+    story.append(Spacer(1, 15))
+
+    # Grafieken exporteren naar PDF
+    story.append(Paragraph("📊 Grafieken Overzicht", section_style))
+
+    img_func_bytes = fig_func.to_image(format="png", width=600, height=300)
+    story.append(Image(io.BytesIO(img_func_bytes), width=450, height=225))
+    story.append(Spacer(1, 10))
+
+    img_taak_bytes = fig_taak.to_image(format="png", width=600, height=300)
+    story.append(Image(io.BytesIO(img_taak_bytes), width=450, height=225))
+    story.append(Spacer(1, 10))
+
+    img_event_bytes = fig_event.to_image(format="png", width=600, height=400)
+    story.append(Image(io.BytesIO(img_event_bytes), width=450, height=300))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 with tab3:
-    st.subheader("Alle Vastgelegde Gebeurtenissen")
+    st.subheader("📥 Exporteer Wedstrijdrapport")
+
+    col_pdf, col_csv = st.columns(2)
+
+    with col_pdf:
+        st.markdown("##### 📄 PDF Wedstrijdrapport")
+        st.caption("Genereer een printbaar PDF document inclusief alle grafieken en kernstatistieken.")
+        try:
+            pdf_data = generate_pdf_report(df, wedstrijd_info, fig_func, fig_taak, fig_event)
+            st.download_button(
+                label="📄 Download Compleet PDF Rapport",
+                data=pdf_data,
+                file_name=f"Wedstrijdrapport_{team_wij_naam}_vs_{team_zij_naam}.pdf",
+                mime="application/pdf"
+            )
+        except Exception as e:
+            st.info("ℹ️ Om PDF-export met grafieken te gebruiken dient `kaleido` geïnstalleerd te zijn (`pip install kaleido`).")
+
+    with col_csv:
+        st.markdown("##### 📊 Ruwe Data CSV")
+        st.caption("Exporteer alle geobserveerde acties naar een CSV bestand voor verdere verwerking in Excel.")
+        st.download_button(
+            label="📥 Download Ruwe Data (CSV)",
+            data=df.to_csv(index=False).encode('utf-8'),
+            file_name=f"observatie_{team_wij_naam}_vs_{team_zij_naam}.csv",
+            mime="text/csv"
+        )
+
+    st.markdown("---")
+    st.subheader("📋 Alle Vastgelegde Gebeurtenissen")
     st.dataframe(df[["periode", "tijd", "minuut_float", "functie", "taak", "event", "waarde"]], use_container_width=True)
-    st.download_button("📥 Download deze data als CSV", df.to_csv(index=False).encode('utf-8'), "export.csv", "text/csv")
