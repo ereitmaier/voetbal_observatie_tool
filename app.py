@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 
 # --- CONFIGURATIE ---
 SERVER_PHP_URL = "https://team-level-up.com/otsv/get_matches.php"
@@ -60,7 +60,12 @@ selected_filename = None
 query_params = st.query_params
 token_param = query_params.get("token", None)
 
-# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN ---
+# --- DETECTIE: DRAAIT DE APP LOKAAL OF IN DE CLOUD? ---
+# Op localhost / desktop is de beheerder-dropdown zichtbaar.
+# In de cloud / webversie mag ALLEEN de data van de specifieke token getoond worden.
+is_local = os.path.exists(DATA_DIR) and not os.environ.get("STREAMLIT_SERVER_GATHER_USAGE_STATS", False)
+
+# --- 1. BEVEILIGDE ONTSLUITING VIA TOKEN (VERPLICHT BIJ CLOUD TOEGANG) ---
 if token_param:
     current_token = token_param
     try:
@@ -77,94 +82,68 @@ if token_param:
                     match_data = json.loads(f_resp.read().decode('utf-8'))
                 st.sidebar.success("🔒 Beveiligde wedstrijd-link geactiveerd")
             else:
-                st.error("❌ Ongeldige of niet-bestaande link-token.")
+                st.error("❌ Ongeldige of verlopen link-token.")
     except Exception as e:
-        st.error(f"Fout bij het ophalen van beveiligde data via token: {e}")
+        st.error(f"Fout bij het ophalen van de wedstrijddata: {e}")
 
-# --- 2. LOKALE BEHEERDER MODUS (ZICHTBAAR WANNEER ER GEEN TOKEN IS) ---
+# --- 2. LOKALE BEHEERDER MODUS (UITSLUITEND BESCHIKBAAR OP LOCALHOST) ---
 if not match_data:
-    st.sidebar.header("🔍 Wedstrijd Selectie (Lokaal/Beheerder)")
+    if is_local:
+        st.sidebar.header("🔍 Wedstrijd Selectie (Lokaal/Beheerder)")
+        matches_list = []
 
-    matches_list = []
+        if os.path.exists(DATA_DIR):
+            local_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
+            for f_path in local_files:
+                fname = os.path.basename(f_path)
+                if fname == "tokens.json": continue
+                try:
+                    with open(f_path, "r", encoding="utf-8") as f_obj:
+                        content = json.load(f_obj)
+                        w_info = content.get("wedstrijd", {})
+                        wij = w_info.get("wij", "Wij")
+                        zij = w_info.get("zij", "Zij")
+                        datum_raw = w_info.get("datum", "")
 
-    if os.path.exists(DATA_DIR):
-        local_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")), key=os.path.getmtime, reverse=True)
-        for f_path in local_files:
-            fname = os.path.basename(f_path)
-            if fname == "tokens.json": continue
-            try:
-                with open(f_path, "r", encoding="utf-8") as f_obj:
-                    content = json.load(f_obj)
-                    w_info = content.get("wedstrijd", {})
-                    wij = w_info.get("wij", "Wij")
-                    zij = w_info.get("zij", "Zij")
-                    datum_raw = w_info.get("datum", "")
-
-                    if datum_raw and "T" in datum_raw:
-                        d_part, t_part = datum_raw.split("T")
-                        jaar, maand, dag = d_part.split("-")
-                        tijd_str = t_part[:5]
-                        datum_formatted = f"{dag}-{maand}-{jaar} {tijd_str}"
-                    else:
-                        datum_formatted = fname
-
-                    label = f"{wij} vs {zij} ({datum_formatted})"
-            except:
-                label = fname
-            matches_list.append({"filename": fname, "label": label, "source": "local"})
-
-    if not matches_list and SERVER_PHP_URL:
-        try:
-            req = urllib.request.Request(SERVER_PHP_URL, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                if response.status == 200:
-                    server_json = json.loads(response.read().decode('utf-8'))
-                    for item in server_json:
-                        datum_raw = item.get("datum", "")
                         if datum_raw and "T" in datum_raw:
                             d_part, t_part = datum_raw.split("T")
                             jaar, maand, dag = d_part.split("-")
                             tijd_str = t_part[:5]
                             datum_formatted = f"{dag}-{maand}-{jaar} {tijd_str}"
                         else:
-                            datum_formatted = item.get("label", item["filename"])
+                            datum_formatted = fname
 
-                        wij = item.get("wij", "Wij")
-                        zij = item.get("zij", "Zij")
+                        label = f"{wij} vs {zij} ({datum_formatted})"
+                except:
+                    label = fname
+                matches_list.append({"filename": fname, "label": label})
 
-                        matches_list.append({
-                            "filename": item["filename"],
-                            "label": f"{wij} vs {zij} ({datum_formatted})",
-                            "source": "server"
-                        })
-        except Exception as e:
-            st.sidebar.warning("⚠️ Kon geen verbinding maken met get_matches.php op de server.")
+        if matches_list:
+            labels = [m["label"] for m in matches_list]
+            selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels)
+            selected_match_info = matches_list[labels.index(selected_label)]
+            selected_filename = selected_match_info["filename"]
 
-    if matches_list:
-        labels = [m["label"] for m in matches_list]
-        selected_label = st.sidebar.selectbox("Kies een opgeslagen wedstrijd:", labels)
-        selected_match_info = matches_list[labels.index(selected_label)]
-        selected_filename = selected_match_info["filename"]
-
-        if selected_match_info["source"] == "local":
             with open(os.path.join(DATA_DIR, selected_filename), "r", encoding="utf-8") as f:
                 match_data = json.load(f)
         else:
-            file_url = SERVER_DATA_BASE_URL + selected_filename
-            req = urllib.request.Request(file_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(file_url) as resp:
-                match_data = json.loads(resp.read().decode('utf-8'))
+            uploaded_file = st.sidebar.file_uploader("Upload handmatig een JSON wedstrijd-bestand:", type=["json"])
+            if uploaded_file:
+                match_data = json.load(uploaded_file)
     else:
-        uploaded_file = st.sidebar.file_uploader("Upload handmatig een JSON wedstrijd-bestand:", type=["json"])
-        if uploaded_file:
-            match_data = json.load(uploaded_file)
+        # Als er géén token is én de app draait online, blokkeren we toegang tot andere bestanden
+        st.warning("🔒 Toegang geweigerd. Deze online omgeving vereist een geldige wedstrijd-link (token).")
+        st.info("Open een geselecteerde wedstrijd rechtstreeks vanuit de observatietool op team-level-up.com.")
+        st.sidebar.markdown("---")
+        st.sidebar.caption(f"Dashboard Versie: **v{APP_VERSION}**")
+        st.stop()
 
 # --- 3. DELEN FUNCTIONALITEIT ---
 if match_data:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔗 Dashboard Delen")
 
-    if not current_token and selected_filename:
+    if not current_token and selected_filename and is_local:
         try:
             token_query_url = f"{SERVER_PHP_URL}?get_token_for={urllib.parse.quote(selected_filename)}"
             req = urllib.request.Request(token_query_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -177,22 +156,14 @@ if match_data:
 
     if current_token:
         share_url = f"{STREAMLIT_CLOUD_URL}/?token={current_token}"
-    elif selected_filename:
-        share_url = f"{STREAMLIT_CLOUD_URL}/?match={selected_filename}"
-    else:
-        share_url = STREAMLIT_CLOUD_URL
+        st.sidebar.caption("Kopieer deze beveiligde token-link:")
+        st.sidebar.code(share_url, language=None)
 
-    st.sidebar.caption("Kopieer deze link om dit specifieke dashboard te delen:")
-    st.sidebar.code(share_url, language=None)
-
-    qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
-    with st.sidebar.popover("📱 Toon QR-Code om te scannen"):
-        st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
+        qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={urllib.parse.quote(share_url)}"
+        with st.sidebar.popover("📱 Toon QR-Code om te scannen"):
+            st.image(qr_api_url, caption="Scan met telefooncamera om te openen", width=150)
 
 if not match_data:
-    st.info("👋 Welkom! Gebruik een geldige token-link of kies lokaal een wedstrijd in het menu.")
-    st.sidebar.markdown("---")
-    st.sidebar.caption(f"App Versie: **v{APP_VERSION}**")
     st.stop()
 
 # --- 4. DATA VERWERKING EN DASHBOARD WEERGAVE ---
@@ -426,7 +397,7 @@ with tab2:
                 "waarde": "Impactwaarde",
                 "event": "Gebeurtenis"
             },
-            title=f"Wedstrijddynamiek Periode {p} (Positief = Overwicht Zaandijk, Negatief = Onder Druk)"
+            title=f"Wedstrijddynamiek Periode {p} (Positief = Overwicht, Negatief = Onder Druk)"
         )
 
         fig_momentum.add_hline(y=0, line_dash="dash", line_color="#7f8c8d")
