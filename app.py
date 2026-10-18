@@ -400,85 +400,142 @@ with tab2:
 
         st.plotly_chart(fig_momentum, use_container_width=True)
 
-# --- FUNCTIE OM PDF RAPPORT TE GENEREREN ---
-def generate_pdf_report(df, wedstrijd_info, fig_func, fig_taak, fig_event):
+# --- FUNCTIE OM PDF RAPPORT TE GENEREREN ZONDER KALEIDO ---
+def generate_pdf_report(df, wedstrijd_info):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=30,
+        bottomMargin=30
+    )
     story = []
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor("#181825"), spaceAfter=10)
-    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor("#7f8c8d"), spaceAfter=15)
-    section_style = ParagraphStyle('SectionStyle', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor("#27ae60"), spaceBefore=10, spaceAfter=8)
-    normal_style = styles['Normal']
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor("#181825"), spaceAfter=6)
+    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor("#7f8c8d"), spaceAfter=15)
+    section_style = ParagraphStyle('SectionStyle', parent=styles['Heading2'], fontSize=13, textColor=colors.HexColor("#27ae60"), spaceBefore=14, spaceAfter=8)
+    hdr_style = ParagraphStyle('HdrStyle', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.white)
+    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor("#2c3e50"))
+    cell_center = ParagraphStyle('CellCenter', parent=cell_style, alignment=1)
 
-    # Header
     wij = wedstrijd_info.get('wij', 'Wij')
     zij = wedstrijd_info.get('zij', 'Zij')
-    story.append(Paragraph(f"⚽ Wedstrijdrapport: {wij} vs {zij}", title_style))
-    story.append(Paragraph(f"Uitslag: {goals_wij} - {goals_zij} | Generatiedatum: {pd.Timestamp.now().strftime('%d-%m-%Y %H:%M')}", subtitle_style))
-    story.append(Spacer(1, 10))
+    datum_str = pd.Timestamp.now().strftime('%d-%m-%Y %H:%M')
 
-    # Statistieken Tabel
+    # 1. Header
+    story.append(Paragraph(f"⚽ Wedstrijdrapport: {wij} vs {zij}", title_style))
+    story.append(Paragraph(f"Gegenereerd op: {datum_str} | Observatietool v{APP_VERSION}", subtitle_style))
+    story.append(Spacer(1, 5))
+
+    # 2. Kernstatistieken Tabel
+    story.append(Paragraph("📊 Wedstrijdsamenvatting", section_style))
     data_stats = [
-        ["Statistiek", "Waarde"],
-        ["Einduitslag", f"{goals_wij} - {goals_zij}"],
-        ["Totaal Aantal Acties", str(totaal_acties)],
-        ["Aanvallende Acties", f"{aanval_acties} ({round(aanval_acties/totaal_acties*100) if totaal_acties else 0}%)"],
-        ["Verdedigende Acties", f"{verdedig_acties} ({round(verdedig_acties/totaal_acties*100) if totaal_acties else 0}%)"],
-        ["Totaal Kansen", str(scoringskansen)]
+        [Paragraph("Statistiek", hdr_style), Paragraph("Waarde", hdr_style)],
+        [Paragraph("Einduitslag", cell_style), Paragraph(f"<b>{goals_wij} - {goals_zij}</b>", cell_style)],
+        [Paragraph("Totaal Aantal Acties", cell_style), Paragraph(str(totaal_acties), cell_style)],
+        [Paragraph("Aanvallende Acties", cell_style), Paragraph(f"{aanval_acties} ({round(aanval_acties/totaal_acties*100) if totaal_acties else 0}%)", cell_style)],
+        [Paragraph("Verdedigende Acties", cell_style), Paragraph(f"{verdedig_acties} ({round(verdedig_acties/totaal_acties*100) if totaal_acties else 0}%)", cell_style)],
+        [Paragraph("Totaal Kansen", cell_style), Paragraph(str(scoringskansen), cell_style)]
     ]
-    t_stats = Table(data_stats, colWidths=[200, 250])
+    t_stats = Table(data_stats, colWidths=[200, 280])
     t_stats.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (1,0), colors.HexColor("#242438")),
-        ('TEXTCOLOR', (0,0), (1,0), colors.white),
-        ('FONTNAME', (0,0), (1,0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#bdc3c7")),
     ]))
     story.append(t_stats)
+    story.append(Spacer(1, 10))
+
+    # 3. Visuele Verdeling Teamfuncties (Aanvallen vs Verdedigen Balk)
+    story.append(Paragraph("📈 Verdeling Teamfuncties", section_style))
+    pct_aanval = round(aanval_acties / totaal_acties * 100) if totaal_acties else 50
+    pct_verdedig = 100 - pct_aanval
+
+    w_total = 480
+    w_aanval = max(10, int(w_total * (pct_aanval / 100)))
+    w_verdedig = w_total - w_aanval
+
+    bar_data = [[
+        Paragraph(f"<b>Aanvallen: {pct_aanval}%</b>", ParagraphStyle('B1', parent=hdr_style, alignment=1)),
+        Paragraph(f"<b>Verdedigen: {pct_verdedig}%</b>", ParagraphStyle('B2', parent=hdr_style, alignment=1))
+    ]]
+    t_bar = Table(bar_data, colWidths=[w_aanval, w_verdedig])
+    t_bar.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (0,0), colors.HexColor("#27ae60")),
+        ('BACKGROUND', (1,0), (1,0), colors.HexColor("#c0392b")),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(t_bar)
     story.append(Spacer(1, 15))
 
-    # Grafieken exporteren naar PDF
-    story.append(Paragraph("📊 Grafieken Overzicht", section_style))
+    # 4. Gebeurtenissen per Taak & Impactwaarde Tabel
+    story.append(Paragraph("📋 Gedetailleerd Gebeurtenissen Overzicht", section_style))
+    df_summary = df.groupby(["taak", "event", "waarde_str", "waarde"]).size().reset_index(name="aantal")
+    df_summary = df_summary.sort_values(by="waarde", ascending=True)
 
-    img_func_bytes = fig_func.to_image(format="png", width=600, height=300)
-    story.append(Image(io.BytesIO(img_func_bytes), width=450, height=225))
-    story.append(Spacer(1, 10))
+    table_data = [[
+        Paragraph("Teamtaak", hdr_style),
+        Paragraph("Gebeurtenis", hdr_style),
+        Paragraph("Impact", hdr_style),
+        Paragraph("Aantal", hdr_style)
+    ]]
 
-    img_taak_bytes = fig_taak.to_image(format="png", width=600, height=300)
-    story.append(Image(io.BytesIO(img_taak_bytes), width=450, height=225))
-    story.append(Spacer(1, 10))
+    for _, row in df_summary.iterrows():
+        w_val = str(row["waarde_str"])
+        hex_color = COLOR_MAP_WAARDE.get(w_val, "#7f8c8d")
 
-    img_event_bytes = fig_event.to_image(format="png", width=600, height=400)
-    story.append(Image(io.BytesIO(img_event_bytes), width=450, height=300))
+        impact_p = Paragraph(f"<font color='{hex_color}'><b>{w_val}</b></font>", cell_center)
+
+        table_data.append([
+            Paragraph(str(row["taak"]), cell_style),
+            Paragraph(str(row["event"]), cell_style),
+            impact_p,
+            Paragraph(str(row["aantal"]), cell_center)
+        ])
+
+    t_summary = Table(table_data, colWidths=[140, 220, 60, 60])
+    t_summary.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#242438")),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#bdc3c7")),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
+    ]))
+    story.append(t_summary)
 
     doc.build(story)
     buffer.seek(0)
     return buffer
 
 with tab3:
-    st.subheader("📥 Exporteer Wedstrijdrapport")
+    st.subheader("📥 Exporteer Wedstrijdrapport & Data")
 
     col_pdf, col_csv = st.columns(2)
 
     with col_pdf:
         st.markdown("##### 📄 PDF Wedstrijdrapport")
-        st.caption("Genereer een printbaar PDF document inclusief alle grafieken en kernstatistieken.")
+        st.caption("Genereer een printbaar PDF document met samenvatting, functieverdeling en gebeurtenissen.")
         try:
-            pdf_data = generate_pdf_report(df, wedstrijd_info, fig_func, fig_taak, fig_event)
+            pdf_data = generate_pdf_report(df, wedstrijd_info)
             st.download_button(
-                label="📄 Download Compleet PDF Rapport",
+                label="📄 Download PDF Rapport",
                 data=pdf_data,
                 file_name=f"Wedstrijdrapport_{team_wij_naam}_vs_{team_zij_naam}.pdf",
                 mime="application/pdf"
             )
         except Exception as e:
-            st.info("ℹ️ Om PDF-export met grafieken te gebruiken dient `kaleido` geïnstalleerd te zijn (`pip install kaleido`).")
+            st.error(f"Fout bij genereren PDF: {e}")
 
     with col_csv:
         st.markdown("##### 📊 Ruwe Data CSV")
-        st.caption("Exporteer alle geobserveerde acties naar een CSV bestand voor verdere verwerking in Excel.")
+        st.caption("Exporteer alle geobserveerde acties naar een CSV bestand voor Excel.")
         st.download_button(
             label="📥 Download Ruwe Data (CSV)",
             data=df.to_csv(index=False).encode('utf-8'),
